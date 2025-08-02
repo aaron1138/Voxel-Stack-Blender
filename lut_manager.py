@@ -1,25 +1,28 @@
 # lut_manager.py
 
 """
-Manages the active Z-axis Look-Up Table (LUT) for Modular-Stacker.
+Manages the active Z-axis Look-Up Tables (LUTs) for Modular-Stacker.
 Provides functions to generate LUTs based on various algorithms (linear, gamma, S-curve, etc.)
-or load them from a file. The active LUT is a global singleton.
+or load them from a file. The active LUTs are stored in a global dictionary.
 """
 
 import numpy as np
 import json
 import os
-import math
-from typing import Optional, Any # Import Any here
+from typing import Optional, Any, Dict
 
 # Default Z Remapping LUT (linear 0-255)
 _DEFAULT_Z_REMAP_LUT_ARRAY = np.arange(256, dtype=np.uint8)
 
-# Currently Active Z Remapping LUT
-_current_z_remap_lut: np.ndarray = _DEFAULT_Z_REMAP_LUT_ARRAY.copy()
+# --- RESTRUCTURED: Manages multiple named LUTs ---
+_active_luts: Dict[str, np.ndarray] = {
+    "default": _DEFAULT_Z_REMAP_LUT_ARRAY.copy(),
+    "receding": _DEFAULT_Z_REMAP_LUT_ARRAY.copy(),
+    "overhang": _DEFAULT_Z_REMAP_LUT_ARRAY.copy()
+}
 
 # A reference to the application configuration (will be set externally)
-_config_ref: Optional[Any] = None # Using Any to avoid circular import with config.py for now
+_config_ref: Optional[Any] = None
 
 def set_config_reference(config_instance: Any):
     """Sets the reference to the global Config instance."""
@@ -30,41 +33,37 @@ def get_default_z_lut() -> np.ndarray:
     """Returns a copy of the default Z-remapping LUT (linear)."""
     return _DEFAULT_Z_REMAP_LUT_ARRAY.copy()
 
-def get_current_z_lut() -> np.ndarray:
-    """Returns the currently active Z-remapping LUT."""
-    return _current_z_remap_lut.copy()
+def get_current_z_lut(lut_name: str = "default") -> np.ndarray:
+    """Returns the currently active Z-remapping LUT for the given name."""
+    return _active_luts.get(lut_name, _DEFAULT_Z_REMAP_LUT_ARRAY).copy()
 
-def set_current_z_lut(new_lut: np.ndarray):
-    """Sets the currently active Z-remapping LUT.
+def set_current_z_lut(new_lut: np.ndarray, lut_name: str = "default"):
+    """
+    Sets the currently active Z-remapping LUT for the given name.
     Args:
         new_lut (np.ndarray): A 256-entry NumPy array of dtype uint8.
+        lut_name (str): The name of the LUT to set ('default', 'receding', 'overhang').
     """
     if not isinstance(new_lut, np.ndarray) or new_lut.dtype != np.uint8 or new_lut.shape != (256,):
         raise ValueError("New LUT must be a 256-entry NumPy array of dtype uint8.")
-    global _current_z_remap_lut
-    _current_z_remap_lut = new_lut.copy()
+    
+    global _active_luts
+    _active_luts[lut_name] = new_lut.copy()
 
-def apply_z_lut(image_array: np.ndarray) -> np.ndarray:
+def apply_z_lut(image_array: np.ndarray, lut_name: str = "default") -> np.ndarray:
     """
-    Applies the currently active Z-REMAP_LUT to an 8-bit grayscale image (NumPy array).
+    Applies the specified active Z-REMAP_LUT to an 8-bit grayscale image.
     Args:
         image_array (np.ndarray): An 8-bit grayscale NumPy array (uint8).
-                                  Expected values are 0-255.
+        lut_name (str): The name of the LUT to apply.
     Returns:
-        np.ndarray: A new NumPy array with the LUT applied,
-                    remapped to 0-255 uint8 values.
+        np.ndarray: A new NumPy array with the LUT applied.
     """
     if image_array.dtype != np.uint8:
-        # If input is float, convert to uint8 before applying LUT
-        # This assumes the float values are in the 0-255 range or need to be scaled
-        # If the float image is normalized 0-1, it should be scaled to 0-255 first
-        # before calling this function.
         raise TypeError("Input image_array for apply_z_lut must be of type np.uint8.")
     
-    # Apply the LUT using direct indexing (most efficient way for 0-255 range)
-    remapped_array = _current_z_remap_lut[image_array]
-    
-    return remapped_array
+    active_lut = _active_luts.get(lut_name, _DEFAULT_Z_REMAP_LUT_ARRAY)
+    return active_lut[image_array]
 
 def save_lut(filepath: str, lut_array: np.ndarray):
     """Saves a LUT array to a JSON file."""
@@ -73,9 +72,8 @@ def save_lut(filepath: str, lut_array: np.ndarray):
     
     try:
         with open(filepath, 'w') as f:
-            # Convert NumPy array to Python list for JSON serialization
             json.dump(lut_array.tolist(), f, indent=4)
-    except Exception as e:
+    except IOError as e:
         raise IOError(f"Failed to save LUT to '{filepath}': {e}")
 
 def load_lut(filepath: str) -> np.ndarray:
@@ -87,261 +85,194 @@ def load_lut(filepath: str) -> np.ndarray:
         with open(filepath, 'r') as f:
             lut_list = json.load(f)
         
-        # Validate and convert to NumPy array
         if not isinstance(lut_list, list) or len(lut_list) != 256:
             raise ValueError("Invalid LUT file format: Expected a list of 256 numbers.")
         
-        loaded_lut = np.array(lut_list, dtype=np.uint8)
-        return loaded_lut
+        return np.array(lut_list, dtype=np.uint8)
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON format in LUT file '{filepath}': {e}")
-    except Exception as e:
+    except IOError as e:
         raise IOError(f"Failed to load LUT from '{filepath}': {e}")
 
 # --- Algorithmic LUT Generation Functions ---
 
 def generate_linear_lut(min_input: int, max_output: int) -> np.ndarray:
     """Generates a linear LUT that maps input range [0, 255] to [min_input, max_output]."""
-    lut = np.zeros(256, dtype=np.float32)
-    for i in range(256):
-        # Scale input i (0-255) to a normalized 0-1 range
-        normalized_input = i / 255.0
-        # Then map this normalized value to the desired output range [min_input, max_output]
-        # This assumes min_input and max_output are within 0-255
-        output_val = min_input + normalized_input * (max_output - min_input)
-        lut[i] = np.clip(output_val, 0, 255) # Ensure output is within 0-255
-    return lut.astype(np.uint8)
+    lut = np.linspace(min_input, max_output, 256)
+    return np.clip(lut, 0, 255).astype(np.uint8)
 
 def generate_gamma_lut(gamma_value: float) -> np.ndarray:
     """Generates a gamma correction LUT."""
     if gamma_value <= 0:
         raise ValueError("Gamma value must be positive.")
-    lut = np.zeros(256, dtype=np.float32)
-    for i in range(256):
-        normalized_input = i / 255.0
-        output_val = np.power(normalized_input, 1.0 / gamma_value) * 255.0
-        lut[i] = np.clip(output_val, 0, 255)
-    return lut.astype(np.uint8)
+    inv_gamma = 1.0 / gamma_value
+    lut = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)])
+    return np.clip(lut, 0, 255).astype(np.uint8)
 
 def generate_s_curve_lut(contrast: float) -> np.ndarray:
-    """Generates an S-curve (contrast) LUT."""
+    """Generates an S-curve (contrast) LUT using a sigmoid function."""
     if not (0.0 <= contrast <= 1.0):
         raise ValueError("Contrast must be between 0.0 and 1.0.")
     
-    lut = np.zeros(256, dtype=np.float32)
-    x = np.linspace(0, 1, 256) # Normalized input values
-
-    # Adjust the S-curve formula based on contrast
-    # A common S-curve formula uses a logistic function or a power function around a midpoint.
-    # For simplicity, we can use a power function based on contrast.
-    # Higher contrast makes the curve steeper, lower makes it flatter.
-    
-    # Example S-curve approximation using a piecewise power function
-    midpoint = 0.5
-    if contrast == 0.0: # Linear
-        y = x
-    elif contrast == 1.0: # Max contrast (hard clip)
-        y = np.where(x < midpoint, 0.0, 1.0)
-    else:
-        # A more flexible S-curve can be achieved with a cubic or similar function
-        # For simplicity, we'll use a power-based approach for now, similar to what's often seen.
-        # This one is more like a gamma curve applied to halves.
-        gamma_factor = 1.0 / (1.0 + contrast * 4) # Adjust this factor for desired curve
-        y = np.where(x < midpoint,
-                     np.power(x / midpoint, gamma_factor) * midpoint,
-                     1.0 - np.power((1.0 - x) / midpoint, gamma_factor) * midpoint)
-        
-    lut = np.clip(y * 255.0, 0, 255)
-    return lut.astype(np.uint8)
+    steepness = 5 + (contrast * 10)
+    x = np.linspace(-1, 1, 256)
+    y = 1 / (1 + np.exp(-steepness * x))
+    lut = y * 255
+    return np.clip(lut, 0, 255).astype(np.uint8)
 
 def generate_log_lut(param: float) -> np.ndarray:
     """Generates a logarithmic LUT."""
     if param <= 0:
         raise ValueError("Log parameter must be positive.")
-    lut = np.zeros(256, dtype=np.float32)
-    for i in range(256):
-        normalized_input = i / 255.0
-        # Avoid log(0)
-        if normalized_input == 0:
-            output_val = 0.0
-        else:
-            output_val = np.log1p(normalized_input * param) / np.log1p(param) * 255.0
-        lut[i] = np.clip(output_val, 0, 255)
-    return lut.astype(np.uint8)
+    lut = np.array([np.log1p(i * param) / np.log1p(255 * param) * 255 for i in range(256)])
+    return np.clip(lut, 0, 255).astype(np.uint8)
 
 def generate_exp_lut(param: float) -> np.ndarray:
     """Generates an exponential LUT."""
     if param <= 0:
         raise ValueError("Exp parameter must be positive.")
-    lut = np.zeros(256, dtype=np.float32)
-    for i in range(256):
-        normalized_input = i / 255.0
-        output_val = np.power(normalized_input, param) * 255.0
-        lut[i] = np.clip(output_val, 0, 255)
-    return lut.astype(np.uint8)
+    lut = np.array([((i / 255.0) ** param) * 255 for i in range(256)])
+    return np.clip(lut, 0, 255).astype(np.uint8)
 
 def generate_sqrt_lut(param: float) -> np.ndarray:
     """Generates a square root LUT."""
-    if param <= 0: # Param currently unused, but for future scaling
-        param = 1.0
-    lut = np.zeros(256, dtype=np.float32)
-    for i in range(256):
-        normalized_input = i / 255.0
-        output_val = np.sqrt(normalized_input) * 255.0 # Simple sqrt
-        lut[i] = np.clip(output_val, 0, 255)
-    return lut.astype(np.uint8)
+    lut = np.array([np.sqrt(i / 255.0) * 255 for i in range(256)])
+    return np.clip(lut, 0, 255).astype(np.uint8)
 
 def generate_rodbard_lut(param: float) -> np.ndarray:
     """Generates an ACES-style Rodbard contrast LUT."""
-    # Parameters are constants tuned for specific curve. 'param' can be used for scaling.
     a, b, c, d, e = 2.51, 0.03, 2.43, 0.59, 0.14
-    lut = np.zeros(256, dtype=np.float32)
-    for i in range(256):
-        x = i / 255.0 # Normalized input
-        num = x * (a * x + b)
-        den = x * (c * x + d) + e
-        y = np.clip(num / den, 0.0, 1.0)
-        lut[i] = np.clip(y * 255.0, 0, 255)
-    return lut.astype(np.uint8)
+    x = np.linspace(0, 1, 256)
+    num = x * (a * x + b)
+    den = x * (c * x + d) + e
+    y = num / den
+    lut = y * 255
+    return np.clip(lut, 0, 255).astype(np.uint8)
 
+# --- Main Update Function ---
 
 def update_active_lut_from_config():
     """
-    Updates the global active LUT based on the current settings in the Config.
-    This should be called whenever config settings related to LUT generation change.
+    Updates the global active LUTs based on the current settings in the Config.
+    Iterates through all named LUTs defined in config.lut_settings.
     """
     if _config_ref is None:
-        print("Warning: Config reference not set in lut_manager. Cannot update active LUT.")
+        print("Warning: Config reference not set in lut_manager. Cannot update active LUTs.")
         return
 
-    cfg = _config_ref # Use the globally set config instance
+    cfg = _config_ref
 
-    if cfg.lut_source == "file":
-        if cfg.fixed_lut_path and os.path.exists(cfg.fixed_lut_path):
-            try:
-                loaded_lut = load_lut(cfg.fixed_lut_path)
-                set_current_z_lut(loaded_lut)
-                print(f"LUT Manager: Loaded LUT from file: {cfg.fixed_lut_path}")
-            except Exception as e:
-                print(f"Error loading LUT from file '{cfg.fixed_lut_path}': {e}. Falling back to default linear LUT.")
-                set_current_z_lut(get_default_z_lut())
-        else:
-            print("LUT Manager: Fixed LUT path not specified or file not found. Falling back to default linear LUT.")
-            set_current_z_lut(get_default_z_lut())
-    elif cfg.lut_source == "generated":
-        generated_lut = None
-        if cfg.lut_generation_type == "linear":
-            generated_lut = generate_linear_lut(cfg.linear_min_input, cfg.linear_max_output)
-        elif cfg.lut_generation_type == "gamma":
-            generated_lut = generate_gamma_lut(cfg.gamma_value)
-        elif cfg.lut_generation_type == "s_curve":
-            generated_lut = generate_s_curve_lut(cfg.s_curve_contrast)
-        elif cfg.lut_generation_type == "log":
-            generated_lut = generate_log_lut(cfg.log_param)
-        elif cfg.lut_generation_type == "exp":
-            generated_lut = generate_exp_lut(cfg.exp_param)
-        elif cfg.lut_generation_type == "sqrt":
-            generated_lut = generate_sqrt_lut(cfg.sqrt_param)
-        elif cfg.lut_generation_type == "rodbard":
-            generated_lut = generate_rodbard_lut(cfg.rodbard_param)
-        else:
-            print(f"Warning: Unknown LUT generation type '{cfg.lut_generation_type}'. Falling back to default linear LUT.")
-            generated_lut = get_default_z_lut()
-        
-        if generated_lut is not None:
-            set_current_z_lut(generated_lut)
-            print(f"LUT Manager: Generated '{cfg.lut_generation_type}' LUT.")
-        else:
-            print("LUT Manager: Failed to generate LUT. Falling back to default linear LUT.")
-            set_current_z_lut(get_default_z_lut())
-    else:
-        print(f"Warning: Unknown LUT source '{cfg.lut_source}'. Falling back to default linear LUT.")
-        set_current_z_lut(get_default_z_lut())
+    for lut_name, lut_config in cfg.lut_settings.items():
+        try:
+            if lut_config.source == "file":
+                if lut_config.fixed_path and os.path.exists(lut_config.fixed_path):
+                    loaded_lut = load_lut(lut_config.fixed_path)
+                    set_current_z_lut(loaded_lut, lut_name)
+                else:
+                    print(f"Warning for '{lut_name}' LUT: File path not found. Using default linear LUT.")
+                    set_current_z_lut(get_default_z_lut(), lut_name)
+            
+            elif lut_config.source == "generated":
+                gen_type = lut_config.generation_type
+                if gen_type == "linear":
+                    lut = generate_linear_lut(lut_config.linear_min_input, lut_config.linear_max_output)
+                elif gen_type == "gamma":
+                    lut = generate_gamma_lut(lut_config.gamma_value)
+                elif gen_type == "s_curve":
+                    lut = generate_s_curve_lut(lut_config.s_curve_contrast)
+                elif gen_type == "log":
+                    lut = generate_log_lut(lut_config.log_param)
+                elif gen_type == "exp":
+                    lut = generate_exp_lut(lut_config.exp_param)
+                elif gen_type == "sqrt":
+                    lut = generate_sqrt_lut(lut_config.sqrt_param)
+                elif gen_type == "rodbard":
+                    lut = generate_rodbard_lut(lut_config.rodbard_param)
+                else:
+                    print(f"Warning for '{lut_name}' LUT: Unknown generation type. Using default linear LUT.")
+                    lut = get_default_z_lut()
+                
+                set_current_z_lut(lut, lut_name)
+            
+            else:
+                print(f"Warning for '{lut_name}' LUT: Unknown source '{lut_config.source}'. Using default.")
+                set_current_z_lut(get_default_z_lut(), lut_name)
 
-# Initial setup: ensure a default LUT is active
-set_current_z_lut(get_default_z_lut())
+        except Exception as e:
+            print(f"Error updating '{lut_name}' LUT: {e}. Falling back to default linear LUT.")
+            set_current_z_lut(get_default_z_lut(), lut_name)
 
-# Example usage (for testing purposes, remove in final app)
+# Initial setup
+update_active_lut_from_config()
+
+# Example usage (for testing purposes)
 if __name__ == '__main__':
     print("--- LUT Manager Module Test ---")
     
-    # Dummy Config for testing
-    class MockConfig:
+    # Import necessary mock objects from the updated config structure
+    from config import Config, LutConfig
+
+    # --- Mock Config Setup ---
+    class MockConfig(Config):
         def __init__(self):
-            self.lut_source = "generated"
-            self.lut_generation_type = "linear"
-            self.gamma_value = 2.2
-            self.linear_min_input = 50
-            self.linear_max_output = 200
-            self.s_curve_contrast = 0.7
-            self.log_param = 50.0
-            self.exp_param = 0.5
-            self.sqrt_param = 1.0 # Not actively used in sqrt generation, but for consistency
-            self.rodbard_param = 1.0 # Not actively used in rodbard generation, but for consistency
-            self.fixed_lut_path = ""
-    
+            # Bypass the singleton's file loading for a clean test environment
+            super().__init__() 
+            self.lut_settings = {
+                "default": LutConfig(source="generated", generation_type="linear", linear_min_input=50, linear_max_output=200),
+                "receding": LutConfig(source="generated", generation_type="gamma", gamma_value=0.5),
+                "overhang": LutConfig(source="file", fixed_path="test_overhang_lut.json")
+            }
+
     mock_config = MockConfig()
-    set_config_reference(mock_config) # Set the mock config
+    
+    # Create a dummy LUT file for the 'overhang' test case
+    test_file = "test_overhang_lut.json"
+    dummy_overhang_lut = np.flip(np.arange(256, dtype=np.uint8)) # An inverted LUT
+    save_lut(test_file, dummy_overhang_lut)
+    print(f"Created dummy LUT file: {test_file}")
 
-    # Test linear LUT generation
-    mock_config.lut_generation_type = "linear"
-    mock_config.linear_min_input = 50
-    mock_config.linear_max_output = 200
+    # Set the config reference for the lut_manager
+    set_config_reference(mock_config)
+
+    # --- Test Execution ---
+    print("\nUpdating active LUTs from mock config...")
     update_active_lut_from_config()
-    linear_lut = get_current_z_lut()
-    print(f"\nLinear LUT (first 10): {linear_lut[:10]}")
-    print(f"Linear LUT (last 10): {linear_lut[-10:]}")
-    
-    # Test gamma LUT generation
-    mock_config.lut_generation_type = "gamma"
-    mock_config.gamma_value = 0.5 # Brightening gamma
-    update_active_lut_from_config()
-    gamma_lut = get_current_z_lut()
-    print(f"\nGamma LUT (gamma=0.5, first 10): {gamma_lut[:10]}")
-    print(f"Gamma LUT (gamma=0.5, last 10): {gamma_lut[-10:]}")
 
-    # Test S-curve LUT generation
-    mock_config.lut_generation_type = "s_curve"
-    mock_config.s_curve_contrast = 0.8
-    update_active_lut_from_config()
-    s_curve_lut = get_current_z_lut()
-    print(f"\nS-Curve LUT (contrast=0.8, first 10): {s_curve_lut[:10]}")
-    print(f"S-Curve LUT (contrast=0.8, last 10): {s_curve_lut[-10:]}")
+    # Verify each LUT was set correctly
+    default_lut = get_current_z_lut("default")
+    receding_lut = get_current_z_lut("receding")
+    overhang_lut = get_current_z_lut("overhang")
 
-    # Test saving and loading a LUT
-    test_file = "test_generated_lut.json"
-    try:
-        save_lut(test_file, linear_lut)
-        print(f"\nGenerated linear LUT saved to {test_file}")
-        loaded_lut = load_lut(test_file)
-        print(f"Loaded LUT from {test_file} (first 10): {loaded_lut[:10]}")
-        if np.array_equal(linear_lut, loaded_lut):
-            print("Loaded LUT matches saved LUT.")
-        else:
-            print("Loaded LUT DOES NOT match saved LUT.")
-    except Exception as e:
-        print(f"Error during LUT file operations: {e}")
-    finally:
-        if os.path.exists(test_file):
-            os.remove(test_file)
-            print(f"Cleaned up {test_file}")
+    print(f"\n'default' LUT (linear 50-200) start: {default_lut[:5]}")
+    assert default_lut[0] == 50, "Default LUT min value is incorrect"
+    assert default_lut[255] == 200, "Default LUT max value is incorrect"
 
-    # Test applying LUT to a dummy image
-    dummy_image = np.array([[0, 50, 100, 150, 200, 255],
-                            [10, 60, 110, 160, 210, 240]], dtype=np.uint8)
-    
-    mock_config.lut_generation_type = "linear"
-    mock_config.linear_min_input = 0
-    mock_config.linear_max_output = 255
-    update_active_lut_from_config() # Ensure linear LUT is active
-    
-    remapped_image = apply_z_lut(dummy_image)
-    print("\nOriginal dummy image:\n", dummy_image)
-    print("Remapped dummy image (linear 0-255):\n", remapped_image)
+    print(f"'receding' LUT (gamma 0.5) start: {receding_lut[:5]}")
+    expected_gamma_lut = generate_gamma_lut(0.5)
+    assert np.array_equal(receding_lut, expected_gamma_lut), "Receding LUT is not a correct gamma 0.5 LUT"
 
-    mock_config.lut_generation_type = "gamma"
-    mock_config.gamma_value = 2.2 # Darkening gamma
-    update_active_lut_from_config() # Ensure gamma LUT is active
-    
-    remapped_image_gamma = apply_z_lut(dummy_image)
-    print("\nRemapped dummy image (gamma=2.2):\n", remapped_image_gamma)
+    print(f"'overhang' LUT (loaded from file) start: {overhang_lut[:5]}")
+    assert np.array_equal(overhang_lut, dummy_overhang_lut), "Overhang LUT did not load correctly from file"
+
+    print("\n--- Testing LUT Application ---")
+    dummy_image = np.array([0, 64, 128, 192, 255], dtype=np.uint8)
+    print(f"Original image values: {dummy_image}")
+
+    applied_default = apply_z_lut(dummy_image, "default")
+    print(f"Applied 'default' LUT: {applied_default}")
+    assert applied_default[0] == 50, "Default LUT application failed"
+
+    applied_receding = apply_z_lut(dummy_image, "receding")
+    print(f"Applied 'receding' LUT: {applied_receding}")
+    assert applied_receding[1] > 64, "Receding (brightening gamma) LUT application failed"
+
+    applied_overhang = apply_z_lut(dummy_image, "overhang")
+    print(f"Applied 'overhang' LUT: {applied_overhang}")
+    assert applied_overhang[0] == 255 and applied_overhang[-1] == 0, "Overhang (inverted) LUT application failed"
+
+    # --- Cleanup ---
+    if os.path.exists(test_file):
+        os.remove(test_file)
+        print(f"\nCleaned up {test_file}")
+
+    print("\n--- LUT Manager Test Complete ---")
