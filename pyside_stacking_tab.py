@@ -64,6 +64,20 @@ class StackingTab(QWidget):
         overhang_layout.addWidget(self.vert_overhang_fade_edit)
         overhang_layout.addStretch(1)
         vertical_blend_layout.addLayout(overhang_layout)
+        
+        # --- NEW: Normalization and Gamma controls ---
+        norm_gamma_layout = QHBoxLayout()
+        self.use_fixed_fade_check = QCheckBox("Use Fixed Fade Distance")
+        self.use_fixed_fade_check.setToolTip("If checked, gradient fades over a fixed distance, preventing a 'halo' on small shapes.")
+        norm_gamma_layout.addWidget(self.use_fixed_fade_check)
+        norm_gamma_layout.addStretch(1)
+        norm_gamma_layout.addWidget(QLabel("Vertical Gamma:"))
+        self.vertical_gamma_edit = QLineEdit(validator=QDoubleValidator(0.01, 10.0, 2, self))
+        self.vertical_gamma_edit.setToolTip("Gamma value to control the fade profile of the gradient. < 1.0 makes the fade more gradual.")
+        self.vertical_gamma_edit.setFixedWidth(60)
+        norm_gamma_layout.addWidget(self.vertical_gamma_edit)
+        vertical_blend_layout.addLayout(norm_gamma_layout)
+
         main_layout.addWidget(self.vertical_blend_group)
 
         # --- Stacking (Blend) Group ---
@@ -116,17 +130,24 @@ class StackingTab(QWidget):
         """Connects widget signals to their respective slots."""
         self.vertical_blend_group.toggled.connect(self._update_controls_visibility)
         self.vb_preprocess_check.stateChanged.connect(self._update_controls_visibility)
+        # NEW: Connect the fixed fade checkbox to update UI state
+        self.use_fixed_fade_check.stateChanged.connect(self._update_controls_visibility)
 
     def _update_controls_visibility(self):
         """Enables/disables controls based on the selected modes."""
         is_vb_active = self.vertical_blend_group.isChecked()
         is_preprocess = self.vb_preprocess_check.isChecked()
+        use_fixed = self.use_fixed_fade_check.isChecked()
 
         # The standard stacking group is enabled if VB is off, or if VB is on and in pre-processor mode.
         self.stacking_group.setEnabled(not is_vb_active or is_preprocess)
         
         # The pre-processor checkbox is only relevant if VB is active.
         self.vb_preprocess_check.setEnabled(is_vb_active)
+        
+        # NEW: Enable/disable fade distance edits based on the fixed fade checkbox
+        self.vert_receding_fade_edit.setEnabled(is_vb_active and use_fixed)
+        self.vert_overhang_fade_edit.setEnabled(is_vb_active and use_fixed)
 
     def get_config(self) -> dict:
         """Collects current settings from this tab's widgets."""
@@ -156,6 +177,10 @@ class StackingTab(QWidget):
         config_data["vertical_overhang_layers"] = self.vert_overhang_layers_spin.value()
         config_data["vertical_overhang_fade_dist"] = float(self.vert_overhang_fade_edit.text())
         
+        # --- NEW: Get values from new controls ---
+        config_data["use_fixed_fade"] = self.use_fixed_fade_check.isChecked()
+        config_data["vertical_gamma"] = float(self.vertical_gamma_edit.text()) if self.vertical_gamma_edit.text() else 1.0
+
         # Directional blend and others are not in this simplified UI, but we should provide defaults
         config_data["directional_blend"] = False
         config_data["dir_sigma"] = 1.0
@@ -183,5 +208,9 @@ class StackingTab(QWidget):
         self.vert_receding_fade_edit.setText(str(cfg.vertical_receding_fade_dist))
         self.vert_overhang_layers_spin.setValue(cfg.vertical_overhang_layers)
         self.vert_overhang_fade_edit.setText(str(cfg.vertical_overhang_fade_dist))
+
+        # --- NEW: Apply settings to new controls ---
+        self.use_fixed_fade_check.setChecked(cfg.use_fixed_fade)
+        self.vertical_gamma_edit.setText(str(cfg.vertical_gamma))
 
         self._update_controls_visibility()

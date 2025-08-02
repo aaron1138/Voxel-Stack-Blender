@@ -1,8 +1,11 @@
+# stacking_processor.py
+
 """
 The core image processing engine for Modular-Stacker.
-It performs Z-axis blending, applies the Z-LUT, and then
-processes the image through the XY blending pipeline.
-This version supports a vertical blend pre-processing stage.
+This version has been refactored to clearly separate the three main processing modes:
+1. Vertical Blending as a pre-processor, followed by Z-axis Stacking.
+2. Vertical Blending as a substitute for Z-axis Stacking.
+3. Standard Z-axis Stacking only.
 """
 
 import numpy as np
@@ -31,53 +34,63 @@ def set_config_reference(config_instance: Any):
 
 def process_image_stack(image_window: List[np.ndarray]) -> np.ndarray:
     """
-    Processes a single stack (window) of grayscale images through the full pipeline.
+    Processes a single stack (window) of grayscale images through the full pipeline,
+    dispatching to the correct processing mode based on configuration.
     """
     if _config_ref is None:
         raise RuntimeError("Config reference not set in stacking_processor.")
     if not image_window:
         raise ValueError("Image window cannot be empty.")
 
-    # --- Stage 1: Optional Vertical Blend Pre-processing ---
-    # The input to the rest of the pipeline is either the original window
-    # or the window after being processed by the vertical blender.
-    processing_window = image_window
-    if _config_ref.vertical_blend_pre_process:
-        processing_window = vertical_blend_processor.process_image_window(image_window)
-        
-        # --- Stage 2A: Optional Vertical LUT Application ---
-        if _config_ref.apply_vertical_luts:
-            # Apply receding and overhang LUTs to each image in the processed window
-            receded_luts_applied = [lut_manager.apply_z_lut(img, "receding") for img in processing_window]
-            processing_window = [lut_manager.apply_z_lut(img, "overhang") for img in receded_luts_applied]
+    # --- Determine the processing path ---
+    is_vb_substitute = (
+        not _config_ref.vertical_blend_pre_process and 
+        _config_ref.blend_mode.startswith("vertical_")
+    )
+    is_vb_preprocess = _config_ref.vertical_blend_pre_process
 
-    # --- Stage 2B: Stacking / Blending ---
-    # This stage reduces the window to a single image.
-    
-    blend_mode = _config_ref.blend_mode
-    
-    # If VB is a substitute, we take the center image from the VB-processed window.
-    if not _config_ref.vertical_blend_pre_process and blend_mode.startswith("vertical_"):
-        center_index = len(processing_window) // 2
-        # Run the vertical blend processor on the original window to get just the one final image
-        temp_processed_window = vertical_blend_processor.process_image_window(image_window)
-        stacked_image = temp_processed_window[center_index]
+    # This variable will hold the single, blended image result from the Z-axis processing.
+    stacked_image: np.ndarray
+
+    # --- STAGE 1: Perform the primary Z-axis blend/stack operation ---
+
+    if is_vb_substitute:
+        # --- MODE 1: Vertical Blending ONLY (Substitute Mode) ---
+        # This mode calls the new function that directly produces the final blended image.
+        stacked_image = vertical_blend_processor.blend_image_window_to_single_image(image_window)
         
-        # Apply vertical LUTs if configured for substitute mode
+        # Apply vertical LUTs if configured (logic preserved from original)
         if _config_ref.apply_vertical_luts:
             stacked_image = lut_manager.apply_z_lut(stacked_image, "receding")
             stacked_image = lut_manager.apply_z_lut(stacked_image, "overhang")
 
-    else: # Standard stacking or pre-processor mode stacking
-        stacked_image = _perform_stacking(processing_window, blend_mode)
+    elif is_vb_preprocess:
+        # --- MODE 2: Sequential (VB Pre-process -> Stacking) ---
+        # First, run the vertical blend pre-processor on the window
+        vb_processed_window = vertical_blend_processor.process_image_window(image_window)
+        
+        # Optionally apply vertical LUTs to the pre-processed window (logic preserved from original)
+        if _config_ref.apply_vertical_luts:
+            receded_luts_applied = [lut_manager.apply_z_lut(img, "receding") for img in vb_processed_window]
+            vb_processed_window = [lut_manager.apply_z_lut(img, "overhang") for img in receded_luts_applied]
+            
+        # Then, perform the standard stacking on the result of the pre-processing
+        stacked_image = _perform_stacking(vb_processed_window, _config_ref.blend_mode)
+        
+    else:
+        # --- MODE 3: Stacking ONLY ---
+        # Perform the standard stacking on the original, unmodified window
+        stacked_image = _perform_stacking(image_window, _config_ref.blend_mode)
 
-    # --- Stage 3: Optional Default LUT Application ---
+    # --- STAGE 2: Optional Default LUT Application ---
+    # This LUT is applied after the Z-axis processing is complete.
     if _config_ref.apply_default_lut_after_stacking:
         image_ready_for_xy = lut_manager.apply_z_lut(stacked_image, "default")
     else:
         image_ready_for_xy = stacked_image
 
-    # --- Stage 4: XY Blending Pipeline ---
+    # --- STAGE 3: XY Blending Pipeline ---
+    # The final stage applies any configured XY-plane filters.
     final_processed_image = xy_blend_processor.process_xy_pipeline(image_ready_for_xy)
 
     return final_processed_image
@@ -86,7 +99,7 @@ def process_image_stack(image_window: List[np.ndarray]) -> np.ndarray:
 def _perform_stacking(image_window: List[np.ndarray], blend_mode: str) -> np.ndarray:
     """
     Performs the standard Z-axis stacking operation on a window of images.
-    This function contains the original stacking logic.
+    This function contains the original stacking logic and is unchanged.
     """
     H, W = image_window[0].shape[:2]
     scale_factor = 1 << _config_ref.scale_bits
@@ -148,7 +161,7 @@ def _perform_stacking(image_window: List[np.ndarray], blend_mode: str) -> np.nda
         my = ((my * 255) // (my.max() or 1)).astype(np.uint8)
         contour = np.outer(my, mx)
         mixed = cv2.addWeighted(base.astype(np.uint8), 1.0 - _config_ref.top_surface_strength,
-                                  contour, _config_ref.top_surface_strength, 0)
+                                contour, _config_ref.top_surface_strength, 0)
         if _config_ref.top_surface_smoothing and _config_ref.top_surface_strength > 0:
             mixed = cv2.GaussianBlur(mixed, (0,0), _config_ref.top_surface_strength)
         return mixed

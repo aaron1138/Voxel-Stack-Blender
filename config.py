@@ -122,15 +122,19 @@ class Config:
     dir_sigma: float = 1.0
 
     # --- Vertical Blending Parameters ---
-    vertical_blend_pre_process: bool = False # NEW: If True, run VB before stacking. If False, VB is a substitute for stacking.
+    vertical_blend_pre_process: bool = False
     vertical_receding_layers: int = 3
-    vertical_receding_fade_dist: float = 10.0
     vertical_overhang_layers: int = 3
+    
+    # --- NEW: Parameters from legacy app for gradient control ---
+    use_fixed_fade: bool = True
+    vertical_receding_fade_dist: float = 10.0
     vertical_overhang_fade_dist: float = 10.0
+    vertical_gamma: float = 0.7
 
     # --- LUT Management ---
-    apply_vertical_luts: bool = True # NEW: Apply receding/overhang LUTs post-vertical blend.
-    apply_default_lut_after_stacking: bool = True # NEW: Apply default LUT post-stacking.
+    apply_vertical_luts: bool = True
+    apply_default_lut_after_stacking: bool = True
     lut_settings: Dict[str, LutConfig] = field(default_factory=lambda: {
         "default": LutConfig(),
         "receding": LutConfig(),
