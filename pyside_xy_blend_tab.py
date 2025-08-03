@@ -425,54 +425,59 @@ class XYBlendTab(QWidget):
 
         self.selected_op_type_combo.currentTextChanged.connect(self._on_selected_op_type_changed)
 
-        # Connect parameter edits to update config when text changes
+        # --- ALL CONNECTIONS UPDATED TO PASS THE SENDER WIDGET ---
+
         # Gaussian
-        self.gaussian_ksize_x_edit.textChanged.connect(lambda text: self._update_param_in_config("gaussian_ksize_x", text, int))
-        self.gaussian_ksize_y_edit.textChanged.connect(lambda text: self._update_param_in_config("gaussian_ksize_y", text, int))
-        self.gaussian_sigma_x_edit.textChanged.connect(lambda text: self._update_param_in_config("gaussian_sigma_x", text, float))
-        self.gaussian_sigma_y_edit.textChanged.connect(lambda text: self._update_param_in_config("gaussian_sigma_y", text, float))
-        
+        self.gaussian_ksize_x_edit.editingFinished.connect(lambda: self._update_param_in_config(self.gaussian_ksize_x_edit, "gaussian_ksize_x", self.gaussian_ksize_x_edit.text(), int))
+        self.gaussian_ksize_y_edit.editingFinished.connect(lambda: self._update_param_in_config(self.gaussian_ksize_y_edit, "gaussian_ksize_y", self.gaussian_ksize_y_edit.text(), int))
+        self.gaussian_sigma_x_edit.editingFinished.connect(lambda: self._update_param_in_config(self.gaussian_sigma_x_edit, "gaussian_sigma_x", self.gaussian_sigma_x_edit.text(), float))
+        self.gaussian_sigma_y_edit.editingFinished.connect(lambda: self._update_param_in_config(self.gaussian_sigma_y_edit, "gaussian_sigma_y", self.gaussian_sigma_y_edit.text(), float))
+
         # Bilateral
-        self.bilateral_d_edit.textChanged.connect(lambda text: self._update_param_in_config("bilateral_d", text, int))
-        self.bilateral_sigma_color_edit.textChanged.connect(lambda text: self._update_param_in_config("bilateral_sigma_color", text, float))
-        self.bilateral_sigma_space_edit.textChanged.connect(lambda text: self._update_param_in_config("bilateral_sigma_space", text, float))
+        self.bilateral_d_edit.editingFinished.connect(lambda: self._update_param_in_config(self.bilateral_d_edit, "bilateral_d", self.bilateral_d_edit.text(), int))
+        self.bilateral_sigma_color_edit.editingFinished.connect(lambda: self._update_param_in_config(self.bilateral_sigma_color_edit, "bilateral_sigma_color", self.bilateral_sigma_color_edit.text(), float))
+        self.bilateral_sigma_space_edit.editingFinished.connect(lambda: self._update_param_in_config(self.bilateral_sigma_space_edit, "bilateral_sigma_space", self.bilateral_sigma_space_edit.text(), float))
 
         # Median
-        self.median_ksize_edit.textChanged.connect(lambda text: self._update_param_in_config("median_ksize", text, int))
+        self.median_ksize_edit.editingFinished.connect(lambda: self._update_param_in_config(self.median_ksize_edit, "median_ksize", self.median_ksize_edit.text(), int))
 
         # Unsharp
-        self.unsharp_amount_edit.textChanged.connect(lambda text: self._update_param_in_config("unsharp_amount", text, float))
-        self.unsharp_threshold_edit.textChanged.connect(lambda text: self._update_param_in_config("unsharp_threshold", text, int))
-        self.unsharp_blur_ksize_edit.textChanged.connect(lambda text: self._update_param_in_config("unsharp_blur_ksize", text, int))
-        self.unsharp_blur_sigma_edit.textChanged.connect(lambda text: self._update_param_in_config("unsharp_blur_sigma", text, float))
+        self.unsharp_amount_edit.editingFinished.connect(lambda: self._update_param_in_config(self.unsharp_amount_edit, "unsharp_amount", self.unsharp_amount_edit.text(), float))
+        self.unsharp_threshold_edit.editingFinished.connect(lambda: self._update_param_in_config(self.unsharp_threshold_edit, "unsharp_threshold", self.unsharp_threshold_edit.text(), int))
+        self.unsharp_blur_ksize_edit.editingFinished.connect(lambda: self._update_param_in_config(self.unsharp_blur_ksize_edit, "unsharp_blur_ksize", self.unsharp_blur_ksize_edit.text(), int))
+        self.unsharp_blur_sigma_edit.editingFinished.connect(lambda: self._update_param_in_config(self.unsharp_blur_sigma_edit, "unsharp_blur_sigma", self.unsharp_blur_sigma_edit.text(), float))
 
         # Resize
-        self.resize_width_edit.textChanged.connect(lambda text: self._update_param_in_config("resize_width", text, int, allow_none_if_zero=True))
-        self.resize_height_edit.textChanged.connect(lambda text: self._update_param_in_config("resize_height", text, int, allow_none_if_zero=True))
-        self.resample_mode_combo.currentTextChanged.connect(lambda text: self._update_param_in_config("resample_mode", text, str))
+        self.resize_width_edit.editingFinished.connect(lambda: self._update_param_in_config(self.resize_width_edit, "resize_width", self.resize_width_edit.text(), int, allow_none_if_zero=True))
+        self.resize_height_edit.editingFinished.connect(lambda: self._update_param_in_config(self.resize_height_edit, "resize_height", self.resize_height_edit.text(), int, allow_none_if_zero=True))
+        self.resample_mode_combo.currentTextChanged.connect(lambda text: self._update_param_in_config(self.resample_mode_combo, "resample_mode", text, str))
 
-        # LUT Parameters (NEW connections)
+        # LUT Parameters
         self.lut_source_combo.currentTextChanged.connect(self._on_lut_source_changed)
         self.lut_generation_type_combo.currentTextChanged.connect(self._on_lut_gen_type_changed)
 
-        self.lut_linear_min_input_edit.textChanged.connect(lambda text: self._update_lut_param_in_config("linear_min_input", text, int))
-        self.lut_linear_max_output_edit.textChanged.connect(lambda text: self._update_lut_param_in_config("linear_max_output", text, int))
+        self.lut_linear_min_input_edit.editingFinished.connect(lambda: self._update_lut_param_in_config(self.lut_linear_min_input_edit, "linear_min_input", self.lut_linear_min_input_edit.text(), int))
+        self.lut_linear_max_output_edit.editingFinished.connect(lambda: self._update_lut_param_in_config(self.lut_linear_max_output_edit, "linear_max_output", self.lut_linear_max_output_edit.text(), int))
         
-        self.lut_gamma_value_edit.textChanged.connect(lambda text: self._update_lut_param_in_config("gamma_value", text, float, slider=self.lut_gamma_value_slider, scale_factor=100.0))
+        self.lut_gamma_value_edit.editingFinished.connect(lambda: self._update_lut_param_in_config(self.lut_gamma_value_edit, "gamma_value", self.lut_gamma_value_edit.text(), float, slider=self.lut_gamma_value_slider, scale_factor=100.0))
         self.lut_gamma_value_slider.valueChanged.connect(lambda val: self.lut_gamma_value_edit.setText(f"{val / 100.0:.2f}"))
+        self.lut_gamma_value_slider.sliderReleased.connect(lambda: self._update_lut_param_in_config(self.lut_gamma_value_edit, "gamma_value", self.lut_gamma_value_edit.text(), float, slider=self.lut_gamma_value_slider, scale_factor=100.0)) # <-- ADD THIS
 
-        self.lut_s_curve_contrast_edit.textChanged.connect(lambda text: self._update_lut_param_in_config("s_curve_contrast", text, float, slider=self.lut_s_curve_contrast_slider, scale_factor=100.0))
+        self.lut_s_curve_contrast_edit.editingFinished.connect(lambda: self._update_lut_param_in_config(self.lut_s_curve_contrast_edit, "s_curve_contrast", self.lut_s_curve_contrast_edit.text(), float, slider=self.lut_s_curve_contrast_slider, scale_factor=100.0))
         self.lut_s_curve_contrast_slider.valueChanged.connect(lambda val: self.lut_s_curve_contrast_edit.setText(f"{val / 100.0:.2f}"))
+        self.lut_s_curve_contrast_slider.sliderReleased.connect(lambda: self._update_lut_param_in_config(self.lut_s_curve_contrast_edit, "s_curve_contrast", self.lut_s_curve_contrast_edit.text(), float, slider=self.lut_s_curve_contrast_slider, scale_factor=100.0)) # <-- ADD THIS
 
-        self.lut_log_param_edit.textChanged.connect(lambda text: self._update_lut_param_in_config("log_param", text, float, slider=self.lut_log_param_slider, scale_factor=10.0))
+        self.lut_log_param_edit.editingFinished.connect(lambda: self._update_lut_param_in_config(self.lut_log_param_edit, "log_param", self.lut_log_param_edit.text(), float, slider=self.lut_log_param_slider, scale_factor=10.0))
         self.lut_log_param_slider.valueChanged.connect(lambda val: self.lut_log_param_edit.setText(f"{val / 10.0:.1f}"))
+        self.lut_log_param_slider.sliderReleased.connect(lambda: self._update_lut_param_in_config(self.lut_log_param_edit, "log_param", self.lut_log_param_edit.text(), float, slider=self.lut_log_param_slider, scale_factor=10.0)) # <-- ADD THIS
 
-        self.lut_exp_param_edit.textChanged.connect(lambda text: self._update_lut_param_in_config("exp_param", text, float, slider=self.lut_exp_param_slider, scale_factor=100.0))
+        self.lut_exp_param_edit.editingFinished.connect(lambda: self._update_lut_param_in_config(self.lut_exp_param_edit, "exp_param", self.lut_exp_param_edit.text(), float, slider=self.lut_exp_param_slider, scale_factor=100.0))
         self.lut_exp_param_slider.valueChanged.connect(lambda val: self.lut_exp_param_edit.setText(f"{val / 100.0:.2f}"))
+        self.lut_exp_param_slider.sliderReleased.connect(lambda: self._update_lut_param_in_config(self.lut_exp_param_edit, "exp_param", self.lut_exp_param_edit.text(), float, slider=self.lut_exp_param_slider, scale_factor=100.0)) # <-- ADD THIS
 
-        self.lut_sqrt_param_edit.textChanged.connect(lambda text: self._update_lut_param_in_config("sqrt_param", text, float))
-        self.lut_rodbard_param_edit.textChanged.connect(lambda text: self._update_lut_param_in_config("rodbard_param", text, float))
-
+        self.lut_sqrt_param_edit.editingFinished.connect(lambda: self._update_lut_param_in_config(self.lut_sqrt_param_edit, "sqrt_param", self.lut_sqrt_param_edit.text(), float))
+        self.lut_rodbard_param_edit.editingFinished.connect(lambda: self._update_lut_param_in_config(self.lut_rodbard_param_edit, "rodbard_param", self.lut_rodbard_param_edit.text(), float))
+        
         self.lut_load_file_button.clicked.connect(self._load_lut_from_file_for_op)
         self.lut_save_file_button.clicked.connect(self._save_lut_to_file_from_op)
 
@@ -667,6 +672,7 @@ class XYBlendTab(QWidget):
         """Blocks/unblocks signals for all parameter QLineEdits and QComboBoxes/QSliders."""
         # List all widgets whose signals should be blocked during UI population
         widgets_to_block = [
+            self.selected_op_type_combo, # <--- ADD THIS LINE DOES THIS FIX SETTING PRESERVATION?? 
             self.gaussian_ksize_x_edit, self.gaussian_ksize_y_edit, self.gaussian_sigma_x_edit, self.gaussian_sigma_y_edit,
             self.bilateral_d_edit, self.bilateral_sigma_color_edit, self.bilateral_sigma_space_edit,
             self.median_ksize_edit,
@@ -686,54 +692,49 @@ class XYBlendTab(QWidget):
         for widget in widgets_to_block:
             widget.blockSignals(block)
 
-    def _update_param_in_config(self, param_name: str, text: str, data_type: type, allow_none_if_zero: bool = False):
-        """
-        Updates a parameter directly on the currently selected XYBlendOperation object.
-        Applies basic type conversion and handles post_init validation feedback.
-        """
+
+
+    def _update_param_in_config(self, sender_widget: QWidget, param_name: str, text: str, data_type: type, allow_none_if_zero: bool = False):
         current_row = self.ops_list_widget.currentRow()
         if current_row < 0 or current_row >= len(self.config.xy_blend_pipeline):
-            return # No operation selected
+            return
 
         selected_op = self.config.xy_blend_pipeline[current_row]
-        
-        sender_widget = self.sender()
-        if not (isinstance(sender_widget, QLineEdit) or isinstance(sender_widget, QComboBox)):
-            return # Ensure it's a widget we expect
+        print(f"DEBUG (BEFORE SET): {selected_op.type} op at index {current_row}. Param '{param_name}' current value in config: {getattr(selected_op, param_name)}")
+        print(f"DEBUG (INPUT TEXT): Received text for '{param_name}': '{text}' (Type: {type(text)})")
+
+        # We no longer need self.sender() because the widget is passed in directly.
 
         value_to_set = None
         if not text and allow_none_if_zero:
             value_to_set = None
             sender_widget.setStyleSheet("")
         else:
-            try:
-                if data_type == int:
-                    value_to_set = int(text)
-                elif data_type == float:
-                    value_to_set = float(text)
-                else: # For string types like resample_mode
-                    value_to_set = text
-                sender_widget.setStyleSheet("") # Clear any error styling
-            except ValueError:
-                sender_widget.setStyleSheet("border: 1px solid red;")
-                return # Do not update config with invalid value
+            if data_type == float:
+                text = text.replace(',', '.')
 
-        # Update the parameter directly on the selected operation object
+            try:
+                value_to_set = data_type(text)
+                sender_widget.setStyleSheet("")
+            except (ValueError, TypeError) as e:
+                sender_widget.setStyleSheet("border: 1px solid red;")
+                print(f"DEBUG (CRITICAL ERROR): Conversion failed. Could not apply text '{text}' to param '{param_name}' as type {data_type}. Error: {e}")
+                return
+
         setattr(selected_op, param_name, value_to_set)
-        
-        # Re-run __post_init__ to apply validation/corrections (e.g., odd ksize)
-        selected_op.__post_init__() 
-        
-        # If the value was corrected by __post_init__, update the UI
+        selected_op.__post_init__()
+
+        print(f"DEBUG (AFTER SET): {selected_op.type} op at index {current_row}. Param '{param_name}' new value in config: {getattr(selected_op, param_name)}")
+
         corrected_value = getattr(selected_op, param_name)
         if corrected_value != value_to_set and isinstance(sender_widget, QLineEdit):
-            # Temporarily block signals to avoid recursion during UI update
             sender_widget.blockSignals(True)
             sender_widget.setText(str(corrected_value))
             sender_widget.blockSignals(False)
+            print(f"DEBUG (UI CORRECTION): {param_name} was corrected by __post_init__ from '{value_to_set}' to '{corrected_value}'. UI updated.")
 
 
-    def _update_lut_param_in_config(self, param_name: str, text: str, data_type: type, slider: Optional[QSlider] = None, scale_factor: float = 1.0):
+    def _update_lut_param_in_config(self, sender_widget: QWidget, param_name: str, text: str, data_type: type, slider: Optional[QSlider] = None, scale_factor: float = 1.0):
         """
         Updates a parameter in the currently selected XYBlendOperation's LutParameters.
         Handles type conversion, validation, and slider synchronization.
@@ -746,23 +747,20 @@ class XYBlendTab(QWidget):
         if selected_op.type != "apply_lut":
             return # Only update if it's an apply_lut operation
 
-        sender_widget = self.sender()
-        if not (isinstance(sender_widget, QLineEdit) or isinstance(sender_widget, QComboBox) or isinstance(sender_widget, QSlider)):
-            return
+        # We no longer need self.sender() as the widget is passed in.
 
         value_to_set = None
         try:
             if data_type == int:
                 value_to_set = int(text)
             elif data_type == float:
-                value_to_set = float(text)
+                value_to_set = float(text.replace(',', '.')) # Also make float conversion robust here
             else:
-                value_to_set = text # String (e.g., lut source, type)
+                value_to_set = text
 
             if isinstance(sender_widget, QLineEdit):
-                sender_widget.setStyleSheet("") # Clear any error styling
+                sender_widget.setStyleSheet("")
             
-            # Update slider if applicable and signal came from QLineEdit
             if slider and isinstance(sender_widget, QLineEdit):
                 slider.blockSignals(True)
                 slider.setValue(int(value_to_set * scale_factor))
@@ -771,37 +769,28 @@ class XYBlendTab(QWidget):
         except ValueError:
             if isinstance(sender_widget, QLineEdit):
                 sender_widget.setStyleSheet("border: 1px solid red;")
-            # No return here, allow invalid text to stay in the QLineEdit with red border.
-            # The actual LUT generation will gracefully handle errors.
-            pass 
+            return # Exit on error
 
-        # Update the parameter directly on the LutParameters object, BUT ONLY if it's a valid number.
-        # This prevents setting attributes to None if the text is invalid or empty string.
-        if value_to_set is not None or (not text and param_name == "fixed_lut_path"): # Allow empty path for file source
+        if value_to_set is not None or (not text and param_name == "fixed_lut_path"):
             setattr(selected_op.lut_params, param_name, value_to_set)
         
-        # Re-run LutParameters.__post_init__ to apply validation/corrections
         selected_op.lut_params.__post_init__()
 
-        # If the value was corrected by __post_init__, update the UI
         corrected_value = getattr(selected_op.lut_params, param_name)
         if corrected_value != value_to_set and isinstance(sender_widget, QLineEdit):
             sender_widget.blockSignals(True)
             sender_widget.setText(str(corrected_value))
             sender_widget.blockSignals(False)
-            if slider and isinstance(sender_widget, QLineEdit):
+            if slider:
                 slider.blockSignals(True)
                 slider.setValue(int(corrected_value * scale_factor))
                 slider.blockSignals(False)
 
-        # Handle source/type specific widget visibility after parameter update
-        # This ensures the correct stacked widget is visible even if value was corrected
         if param_name == "lut_source":
             self._update_lut_source_controls_widget_only(selected_op.lut_params.lut_source.capitalize())
         elif param_name == "lut_generation_type":
             self._update_lut_gen_type_controls_widget_only(selected_op.lut_params.lut_generation_type)
 
-        # Always update the plot after any LUT parameter changes
         self._plot_current_lut_preview(selected_op.lut_params)
 
 
