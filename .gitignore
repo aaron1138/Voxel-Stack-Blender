@@ -9,3 +9,7 @@ settings.json
 # Ignore Zarr stores
 /_zarr_stores/
 /*.zarr/
+*.zip
+*.7z
+*.json
+saves/
