@@ -10,7 +10,7 @@ Performance is fairly acceptable for Python, but if someone would like to port t
 
 <details>
   <summary>Here's some early testing results at 40um layer height.</summary>  
-  ![Example Prints](assets/images/comparison-1920.jpg)
+  ![Example Prints](https://github.com/aaron1138/Voxel-Stack-Blender/blob/main/images/comparison-1920.jpg)
 </details>
 
 
@@ -42,7 +42,9 @@ The program is run from the main.py. Open your terminal or command prompt in the
    - Recommended: slice files with NO anti-aliasing.  The first stage Euclidean distance blending only looks at black and white pixels.  Baked in gray pixels will result in odd gray halos.
    - Using padded numbering and removing any extraneous files such as print previews (3d.png, preview.png, etc.) and print parameters (usually ini/json/txt) is recommended, but it should usually recognize and handled prefixes, padding, and unpadded naturally numbered files. NanoDLP files may need an additional step due to their odd use of 3-channel grayscale images at 1/3rd resolution. 
 2. Configure input/output folders. Creation of separate folders for output is usually recommended.
-3. Recommended: Set the number of threads you want to use.  This controls both speed and memory utilization.  A single 12k slice file needs 50MiB of RAM once uncompressed before we even touch actual processing, floating point upconversions, and mask. As we`re working with several slices per worker along with equally dimensioned maskes and float arrays in Python, this blows up quick.  Processing 12 threads of 12k images with a look down of 4 will vary between 4-8GiB of RAM utilization as threads enter and exit along with the sliding window slice handler.
+3. Recommended: Set the number of threads you want to use.  This controls both speed and memory utilization.  
+   - A single 12k slice file needs 50MiB of RAM once uncompressed before we even touch actual processing, floating point upconversions, and mask. As we`re working with several slices per worker along with equally dimensioned maskes and float arrays in Python, this blows up quick.  
+   - Processing 12 threads of 12k images with a look down of 4 will vary between 4-8GiB of RAM utilization as threads enter and exit along with the sliding window slice handler.
 4. Configure the Z-axis Blend Parameters:
    - "Look Down N Layers" - 2-4 is usually good.  Each layer will "look down" at this many preceding layers to see if it is receding along any edge from those N layers below.
    - Recommended: Enable "Use Fixed Fade Distance" with a number of pixels which will control the fade gradient.  Tests worked well with 15-40.
