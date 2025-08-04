@@ -10,7 +10,7 @@ Performance is fairly acceptable for Python, but if someone would like to port t
 
 <details>
     <summary>Here's some early testing results at 40um layer height.</summary>  
-    ![Hidden Image](images/AA%20Comparison%20(1920)%20-%20Headsplitter%20and%20Gale's%20Head%20GS+Blur%206%20vs%20EDist%204%2035px%20-%20with%20note.jpg)
+    ![Hidden Image](https://github.com/aaron1138/Voxel-Stack-Blender/tree/main/images/comparison-1920.jpg?raw=true)
 </details>
 
 ### 🛠️ Installation
