@@ -4,30 +4,24 @@ An image processing tool designed for improved Z-axis blending and smoothing of 
 
 We start with Z-axis blending built upon generating a grayscale gradient of the current working layer with the layer(s) below using a Euclidean distance map and masking operations.  Next is usually applying one of the non-linear grayscale LUTs to combat the logarithmic and strongly thresholded nature of voxel growth along the Z axis.  Then XY blending operations and additional LUT operation stacking are available for smoothing along the XY layer plane.  Resizing is also available for multi-sampling approaches, however the current version will not merge layers along the Z axis.  Prior efforts focused on Z-axis stack merging and sampling for resolution enhancement and height blending. The Euclidean distance gradient has proven much faster, smoother output, and better at retaining detail than direct layer stacking / sampling / blending. 
 
-The Python source here was primarily composed by LLMs / Generative AI based on the algorithm and general math concepts described by the "author".  Yeah, this is all vibe coded, but I knew the math of what I wanted it to do, so that counts, right?
+The Python source here was primarily composed by LLMs / Generative AI based on the algorithm and general math concepts described by the "author".  Yeah, this is all vibe code, but I knew the math of what I wanted it to do, so that counts, right?
 
 ### 🛠️ Installation
 Prerequisites: Python 3.8 or newer
 
 Clone the repository to your local machine:
-
 `git clone https://github.com/aaron1138/Voxel-Stack-Blender.git`
 `cd Voxel-Stack-Blender`
 
 Create a Python virtual environment and activate it:
-
 `python -m venv venv`
 
 On Windows:
-
 `.\venv\Scripts\activate`
-
 On macOS/Linux:
-
 `source venv/bin/activate`
 
 Install the required dependencies:
-
 `pip install -r requirements.txt`
 
 
@@ -52,20 +46,22 @@ The program is run from the main.py. Open your terminal or command prompt in the
 
 ### ⚠️ Warnings and Advisories
  - This software comes with no warranties.  Print / slice file corruption and printer defects in handling gray pixels may cause **physical and mechanical damage to your printer**. 
- - This program can produce a very high number of gray pixels which is a known bug for most consumer mSLA resin printers using Chitu mainboards. This can result in "lasagna bug" corruption, missing layers, missing gray pixels on random layers*, or if you are lucky, just very slow image loading before exposure (supposedly older Mars/Saturns).  
+ - This program can produce a very high number of gray pixels which is a known bug for most consumer mSLA resin printers using Chitu mainboards. This can result in "lasagna bug" corruption, missing layers, missing gray pixels on random layers[^1], or if you are lucky, just very slow image loading before exposure (supposedly older Mars/Saturns).  
  - Some layers will look a bit *odd*. This especially happens when you have a flat layer in the XY plane which abruptly has protrusions (like rafts).  Nothing to worry about for rafts.  For flat exposure / RP tests, it builds some odd fillets around objects. 
  - Like any other grayscale smoothing this reduces some detail.  I have tried to give as much control via all the nerd knobs as possible without building a slicer from the ground up (don`t currently have those skills - if you do and want to consult, let me know)
- - Increased Rest After Retract / Wait time before cure of 2s for standard layers and a clean has been successful to help image loading with sparsely filled build plates (i.e. 6-10 minis) on my Saturn 4 Ultra.  I am curious to hear others` findings. 
+ - Increased Rest After Retract / Wait time before cure of 2s for standard layers and a clean has been successful[^2] to help image loading with sparsely filled build plates (i.e. 6-10 minis) on my Saturn 4 Ultra.  I am curious to hear others` findings. 
   
- *(Observed on Saturn 4 Ultra 12k with Dec 2024 or Mar 2025 firmware.  I suppose that is better than lasagna. This lead to increasing rest / wait time mentioned above to mitigate)
+ [^1]: Observed on Saturn 4 Ultra 12k with Dec 2024 or Mar 2025 firmware.  I suppose that is better than lasagna. 
+ [^2]: The above missing gray pixels every 4th layer or so lead to increasing rest / wait time mentioned above to mitigate
 
 ### 🤝 Contributing
 Contributions are welcome! If you have suggestions for new features, bug fixes, or performance improvements, please open an issue or submit a pull request.
 
 ### 👉 Useful links to additional information:
+- UVTools: https://github.com/sn4k3/UVtools
 - Richard Greene / Autodesk Ember team research on High Fidelity / Sub-voxel SLA resin printing (slicers are very behind). 
     - https://www.youtube.com/watch?v=PsK7An7ymYk
-- Resin printing VOCs are vastly less dangerous than portrayed on Reddit and Discord by those gatekeeping via safety and fear.  This study focuses specifically on home and small office (e.g. dental) printing scenarios. 
+- Resin printing VOCs are vastly less dangerous than frequently portrayed on Reddit and Discord.  This study focuses specifically on home and small office (e.g. dental) printing scenarios. 
     - https://www.nature.com/articles/s41370-025-00778-y
     - For those unfamiliar with reading academic studies, that whole conclusion block is a politely worded condemnation of safety fear mongering. 
 - "Lasagna bug" demonstrated with Saturn 4 Ultra (older firmware??) 
