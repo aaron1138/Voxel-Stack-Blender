@@ -10,7 +10,7 @@ Performance is fairly acceptable for Python, but if someone would like to port t
 
 <details>
 <summary>Here's some early testing results at 40um layer height.</summary>  
-![Hidden Image](https://github.com/aaron1138/Voxel-Stack-Blender/blob/main/images/comparison-1920.jpg?raw=true)
+![Example Prints](images/1920comparison.png)
 </details>
 
 ### 🛠️ Installation
@@ -68,9 +68,6 @@ Contributions are welcome! If you have suggestions for new features, bug fixes, 
 - UVTools: https://github.com/sn4k3/UVtools
 - Richard Greene / Autodesk Ember team research on High Fidelity / Sub-voxel SLA resin printing (slicers are very behind). 
     - https://www.youtube.com/watch?v=PsK7An7ymYk
-- Resin printing VOCs are vastly less dangerous than frequently portrayed on Reddit and Discord.  This study focuses specifically on home and small office (e.g. dental) printing scenarios. 
-    - https://www.nature.com/articles/s41370-025-00778-y
-    - For those unfamiliar with reading academic studies, that whole conclusion block is a politely worded condemnation of safety fear mongering. 
 - "Lasagna bug" demonstrated with Saturn 4 Ultra (older firmware??) 
     - https://www.youtube.com/watch?v=E5PAmhOnDps
 
