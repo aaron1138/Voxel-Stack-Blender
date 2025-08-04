@@ -59,6 +59,7 @@ The program is run from the main.py. Open your terminal or command prompt in the
    - Additional blending and LUT options may be stacked in the slots for further effect.
    - Resize operations are also available for those rendering slices at higher (or lower I suppose) resolutions than their printer accepts.
  6) Using UVTools or similar, repack your slices in the orignal slice file (or a copy) using the `Actions > Import Layers` choosing `Import type: Replace...`.  Save your file and send it to your printer as normal.
+   - Note: Prints with as thick a grayscale exterior as this process may produce will be softer than normal prior to post curing.  They are more easily damaged during the wash process.  This is visible on some example prints in the `images/` folder as pitting from ultrasonic cavitation and minor gouging down towards the 100% white layers. 
 
 
 
