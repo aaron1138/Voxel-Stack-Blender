@@ -10,7 +10,7 @@ Performance is fairly acceptable for Python, but if someone would like to port t
 
 <details>
 <summary>Here's some early testing results at 40um layer height.</summary>  
-![Example Prints](images/1920comparison.png)
+![Example Prints](https://github.com/aaron1138/Voxel-Stack-Blender/blob/main/images/comparison-1920.jpg)
 </details>
 
 ### 🛠️ Installation
