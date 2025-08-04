@@ -6,6 +6,13 @@ We start with Z-axis blending built upon generating a grayscale gradient of the 
 
 The Python source here was primarily composed by LLMs / Generative AI based on the algorithm and general math concepts described by the "author".  Yeah, this is all vibe code, but I knew the math of what I wanted it to do, so that counts, right?
 
+Performance is fairly acceptable for Python, but if someone would like to port the functionality to native UVTools scripting, I would be happy to help.
+
+<details>
+    <summary>Here's some early testing results at 40um layer height.</summary>  
+    ![Hidden Image](images/AA%20Comparison%20(1920)%20-%20Headsplitter%20and%20Gale's%20Head%20GS+Blur%206%20vs%20EDist%204%2035px%20-%20with%20note.jpg)
+</details>
+
 ### 🛠️ Installation
 Prerequisites: Python 3.8 or newer
 
