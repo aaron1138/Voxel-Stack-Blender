@@ -10,7 +10,7 @@ Performance is fairly acceptable for Python, but if someone would like to port t
 
 <details>
     <summary>Here's some early testing results at 40um layer height.</summary>  
-    ![Hidden Image](/tree/main/images/comparison-1920.jpg?raw=true)
+    ![Hidden Image](images/comparison-1920.jpg?raw=true)
 </details>
 
 ### 🛠️ Installation
