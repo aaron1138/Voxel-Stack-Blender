@@ -8,21 +8,18 @@ The first step is Z-axis blending built upon creating a blend gradient with the 
 Prerequisites: Python 3.8 or newer
 
 Clone the repository to your local machine:
+git clone https://github.com/aaron1138/Voxel-Stack-Blender.git
+cd Voxel-Stack-Blender
 
-git clone https://github.com/aaron1138/Euclidean-Distance-Blend-Slices.git
-cd Euclidean-Distance-Blend-Slices
-
-Create a Python virtual environment and activate it:python -m venv venv
-
+Create a Python virtual environment and activate it:
+python -m venv venv
 # On Windows:
 .\venv\Scripts\activate
 # On macOS/Linux:
 source venv/bin/activate
 
 Install the required dependencies:
-
 pip install -r requirements.txt
-Note: The requirements.txt file should contain: PySide6, numpy, opencv-python, and matplotlib.
 
 
 🚀 Usage
