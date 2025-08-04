@@ -43,7 +43,7 @@
         {
             "type": "gaussian_blur",
             "gaussian_ksize_x": 7,
-            "gaussian_ksize_y": 7,
+            "gaussian_ksize_y": 5,
             "gaussian_sigma_x": 1.0,
             "gaussian_sigma_y": 1.0,
             "bilateral_d": 9,
