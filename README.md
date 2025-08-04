@@ -9,8 +9,8 @@ The Python source here was primarily composed by LLMs / Generative AI based on t
 Performance is fairly acceptable for Python, but if someone would like to port the functionality to native UVTools scripting, I would be happy to help.
 
 <details>
-    <summary>Here's some early testing results at 40um layer height.</summary>  
-    ![Hidden Image](images/comparison-1920.jpg?raw=true)
+<summary>Here's some early testing results at 40um layer height.</summary>  
+![Hidden Image](images/comparison-1920.jpg?raw=true)
 </details>
 
 ### 🛠️ Installation
