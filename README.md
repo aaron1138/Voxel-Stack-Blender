@@ -36,11 +36,13 @@ Install the required dependencies:<br/>
 
 
 ### 🚀 Usage
-The program is run from the main.py. Open your terminal or command prompt in the project directory. Ensure your virtual environment is active if in use. Run the application: `python main.py`.
+With you Python virutal environment active run  `python main.py`.
 
 **2025-08-04** 
- - Added UVTools direct integration for extraction and repacking of slice files via `uvtoolscmd.exe`.  I'll rewrite this readme later to go over that, but steps 1, 2, and 6 are effectively not required.  
- - I would recommend still using the "folder" process a few times and manually scrubbing through the layers output so you can see the results and better understand the grayscale blending being applied.
+ - Added UVTools direct integration for extraction and repacking of slice files via `uvtoolscmd.exe`.  I'll rewrite this readme later for more exact process details, but steps 1, 2, and 6 are effectively not required and the alternate UVT steps should be intuitive.  
+ - I would recommend still using the "folder" process a few times and manually scrubbing through the layers output inside UVTools so you can see the results and better understand the grayscale blending being applied.
+ - Some files and model shapes produce odd results.  Anything with a flat horizontal surface which then has multiple vertical protrusions gets heavy fillets around the protrusions.  Odd looking in the slice files for rafts*, but probably makes they stronger.  Outright weird results on flat exposure and resin feature tests.
+   - *For issues with rafts having too many gray pixels, you could swap back in early layers from the original slice file with UVTools.  I have not observed this being an issue though.  My brushes with the lasagna bug have been a couple dozen millimeters up in the print.  It seems the gray cones around supports isn't a problematic amount of entropy at least for the S4U. 
 
 1. Use UVTools or similar to extract PNGs of your slices numbered to a folder from your slice file.  `File -> Extract file contents` or `<Ctrl>+<Shift>+E`
    - Recommended: slice files with NO anti-aliasing.  
