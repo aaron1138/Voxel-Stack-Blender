@@ -13,3 +13,9 @@ settings.json
 *.7z
 *.json
 saves/
+# Ignore all .json files in the root directory
+/*.json
+# But DO include the baked_luts folder and its contents
+!baked-z-luts/*.json
+!preset-configs/*.json
+!saved_luts/*.json

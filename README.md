@@ -1,12 +1,12 @@
 ## Voxel Stack Blender / Euclidean Distance Slice Blender
 
-An image processing tool designed for improved Z-axis blending and smoothing of mSLA / SLA resin printing slice files. This also features an expanded toolset of XY blending and smoothing post processors as well as gray scale remapping functions to match voxel growth response to anisotropic resin printing dimensions and conditions. 
+An image processing tool designed for improved Z-axis blending[^1] and smoothing of mSLA / SLA resin printing slice files. This also features an expanded toolset of XY blending and smoothing post processors as well as gray scale remapping functions to match voxel growth response to anisotropic resin printing dimensions and conditions. 
 
 We start with Z-axis blending built upon generating a grayscale gradient of the current working layer with the layer(s) below using a Euclidean distance map and masking operations.  Next is usually applying one of the non-linear grayscale LUTs to combat the logarithmic and strongly thresholded nature of voxel growth along the Z axis.  Then XY blending operations and additional LUT operation stacking are available for smoothing along the XY layer plane.  Resizing is also available for multi-sampling approaches, however the current version will not merge layers along the Z axis.  Prior efforts focused on Z-axis stack merging and sampling for resolution enhancement and height blending. The Euclidean distance gradient has proven much faster, smoother output, and better at retaining detail than direct layer stacking / sampling / blending. 
 
-The Python source here was primarily composed by LLMs / Generative AI based on the algorithm and general math concepts described by the "author".  Yeah, this is all vibe code, but I knew the math of what I wanted it to do, so that counts, right?
+The Python source here was primarily composed working with LLMs / Generative AI based on the algorithms and general math concepts of interest to the "author".  Yeah, this is vibe code, but I knew the math of what I wanted it to do, so that counts, right?  I'm not a programmer and it's been a while since my "Introduction to C Programming" (not even C++) in college.
 
-Performance is fairly acceptable for Python, but if someone would like to port the functionality to native UVTools scripting, I would be happy to help.
+Performance is not too bad in Python thanks to Numpy being C under the covers, but if someone would like to port the functionality to native UVTools C# scripting, I would be happy to help.
 
 <details>
   <summary>Here's some early testing results at 40um layer height.</summary>  
@@ -38,6 +38,8 @@ Install the required dependencies:/
 ### 🚀 Usage
 The program is run from the main.py. Open your terminal or command prompt in the project directory. Ensure your virtual environment is active if in use. Run the application: `python main.py`.
 
+2025-08-04 -- Added UVTools direct integration for extraction and repacking of slice files via `uvtoolscmd.exe`.  I'll rewrite this readme later to go over that, but steps 1, 2, and 6 are effectively not required.  I would recommend still using the "folder" process a few times and manually scrubbing through the layers output so you can see the results and better understand the grayscale blending being applied.
+
 1. Use UVTools or similar to extract PNGs of your slices numbered to a folder from your slice file.  `File -> Extract file contents` or `<Ctrl>+<Shift>+E`
    - Recommended: slice files with NO anti-aliasing.  
      - The first stage Euclidean distance blending only looks at black and white pixels.  
@@ -53,7 +55,7 @@ The program is run from the main.py. Open your terminal or command prompt in the
    - "Look Down N Layers" - 2-4 is usually good.  Each layer will "look down" at this many preceding layers to see if it is receding along any edge from those N layers below.
    - Recommended: Enable "Use Fixed Fade Distance" with a number of pixels which will control the fade gradient.  Tests worked well with 15-40.
 5. Configure the XY Blend Pipeline.  These steps are executed for each slice after the gradient is applied and the 8-bit grayscale result of the Euclidean Distance blending is applied.
-   - Recommend starting with a Z-axis growth compensating Apply LUT operation.  The included `EXP(LUT).json` has been put together based on the the high threshold of 40-60% gray necessary for any Z layer growth to begin as well as the natural log / exponential curve of SLA resin voxel growth.
+   - Recommend starting with a Z-axis growth compensating Apply LUT operation.  The included `EXP(LUT)-upShifted.json` has been put together based on the the high threshold of 40-60% gray necessary for any Z layer voxel growth to begin as well as the natural log / exponential curve of SLA resin voxel growth.
    - Next a blending operation, usually a Gaussian Blur is good now to add some interlayer smoothing.  Kernel / matrix sizes are odd numbered rather than a "radius" setting.  Between the kernel size settings and separate X & Y sigma values, you can compensate for anisotropy of voxel XY dimensions (a bit overkill for most).
    - **Why Z-LUT then blur XY?** -- XY grayscale can grow laterally in the XY plane when touching adjacent lit pixels and with much higher sub-voxel resolution than Z growth of lone voxels.  This allows additional contour matching to the horizontal features of the layer.   
    - Additional blending and LUT options may be stacked in the slots for further effect.
@@ -66,13 +68,16 @@ The program is run from the main.py. Open your terminal or command prompt in the
 
 ### ⚠️ Warnings and Advisories
  - This software comes with no warranties.  Print / slice file corruption and printer defects in handling gray pixels may cause **physical and mechanical damage to your printer**. 
- - This program can produce a very high number of gray pixels which is a known bug for most consumer mSLA resin printers using Chitu mainboards. This can result in "lasagna bug" corruption, missing layers, missing gray pixels on random layers[^1], or if you are lucky, just very slow image loading before exposure (supposedly older Mars/Saturns).  
+ - This software has no respect for your RAM or other resources.  Use care with selecting Thread count and other options.
+ - This program can produce a very high number of gray pixels which is a known bug for most consumer mSLA resin printers using Chitu mainboards. This can result in "lasagna bug" corruption, missing layers, missing gray pixels on random layers[^2], or if you are lucky, just very slow image loading before exposure (supposedly older Mars/Saturns).  
  - Some layers will look a bit *odd*. This especially happens when you have a flat layer in the XY plane which abruptly has protrusions (like rafts).  Nothing to worry about for rafts.  For flat exposure / RP tests, it builds some odd fillets around objects. 
+ - Used aggressively, Gaussian Blur and similar in the XY blend pipline can weaken supports, especially contact points.  This is because (a) we are not able to identify supports from the model in the sliced file and (b) unlike slicer blur operations, we are doing a symmetric operation with Gaussian blur without an outward dilation of the edge. 
  - Like any other grayscale smoothing this reduces some detail.  I have tried to give as much control via all the nerd knobs as possible without building a slicer from the ground up (don`t currently have those skills - if you do and want to consult, let me know)
- - Increased Rest After Retract / Wait time before cure of 2s for standard layers and a clean has been successful[^2] to help image loading with sparsely filled build plates (i.e. 6-10 minis) on my Saturn 4 Ultra.  I am curious to hear others` findings. 
+ - Increased Rest After Retract / Wait time before cure of 2s for standard layers and a clean has been successful[^3] to help image loading with sparsely filled build plates (i.e. 6-10 minis) on my Saturn 4 Ultra.  I am curious to hear others` findings. 
   
- [^1]: Observed on Saturn 4 Ultra 12k with Dec 2024 or Mar 2025 firmware.  I suppose that is better than lasagna. 
- [^2]: The above missing gray pixels every 4th layer or so lead to increasing rest / wait time mentioned above to mitigate
+ [^1]: Ummm, legally distinct from vertical and/or 3D anti-aliasing, something, something.... 
+ [^2]: Observed on Saturn 4 Ultra 12k with Dec 2024 or Mar 2025 firmware.  I suppose that is better than lasagna. 
+ [^3]: The above missing gray pixels every 4th layer or so lead to increasing rest / wait time mentioned above to mitigate
 
 
 

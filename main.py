@@ -30,7 +30,7 @@ def main():
     """
     app = QApplication(sys.argv)
     window = ImageProcessorApp()
-    window.resize(900, 600) # Set a reasonable default size
+    window.resize(960, 900) # Set a reasonable default size
     window.show()
     sys.exit(app.exec())
 
