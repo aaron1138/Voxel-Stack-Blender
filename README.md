@@ -8,21 +8,16 @@ The Python source here was primarily composed working with LLMs / Generative AI 
 
 Performance is not too bad in Python thanks to Numpy being C under the covers, but if someone would like to port the functionality to native UVTools C# scripting, I would be happy to help.
 
-### Recent Results
+### Recent Results (Aug 5th Update)
 
 ![Heads Up Comparison CB Blur 6 vs VBlend Preset - Gale - HSBase - LD4-40px-upShiftedExp(LUT)-Bilateral-PiecewiseLUT](https://github.com/user-attachments/assets/7b0585ce-82d5-4984-865a-40432950c26c)
 
- - 2025-08-05 - Excellent results as seen above with just a couple tweaks to the processing parameters.  
- - Input for Voxel-Stack-Blender from Chitubox **not anti-aliased** as the script works better without it.
- - Preset configuration for those results added, presets/Preset-Double-LUT.json.  
- - Preset requires user to go to the first LUT and reset the mapping to saved_luts/EXP(LUT)-upShifted.json as well as set correct input / output settings.
- - Details of the preset / config (order matters):
-   - Look Down 4 layers / Fixed Distance Fade 40 px 
-   - Apply LUT -> File -> EXP(LUT)-upShifted.json
-   - Bilateral Filter, diameter 7, Sigma Color 60, Sigma Space 60
-   - Gaussian Blur, kernel 3x3, Sigma (X, Y) 0.8, 0.8
-   - Apply LUT -> Generated -> Input Min / Max 200-255, Output Min/Max 200-255, Param 2.00 (the sauce here it is brings back down bright whites bled out by the middle 2 filters)
-   - Shows the utility of the segmented / clipped generation setup for LUTs, pre-baked LUTs like EXP(LUT)-upShifted can be pretty closely copied in 1 or 2 piecewise LUTs
+ - Excellent results as seen above with just a couple tweaks to the processing parameters.  Takes around 3-7 minutes to process on a higher end PC depending on how many cores you toss at it including UVTools extraction and repackaging of slice file. 
+ - Input for Voxel-Stack-Blender from Chitubox **not anti-aliased** as per script input requirements.
+ - Preset configuration for those results added, `presets/Preset-Double-LUT.json`.  
+ - Preset requires user to go to the first LUT and reset the mapping to `saved_luts/EXP(LUT)-upShifted.json`.
+ - More details of the preset below.
+
 
 
 
@@ -54,6 +49,11 @@ With you Python virutal environment active run  `python main.py`.
  - I would recommend still using the "folder" process a few times and manually scrubbing through the layers output inside UVTools so you can see the results and better understand the grayscale blending being applied.
  - Some files and model shapes produce odd results.  Anything with a flat horizontal surface which then has multiple vertical protrusions gets heavy fillets around the protrusions.  Odd looking in the slice files for rafts*, but probably makes they stronger.  Outright weird results on flat exposure and resin feature tests.
    - *For issues with rafts having too many gray pixels, you could swap back in early layers from the original slice file with UVTools.  I have not observed this being an issue though.  My brushes with the lasagna bug have been a couple dozen millimeters up in the print.  It seems the gray cones around supports isn't a problematic amount of entropy at least for the S4U. 
+ - Added Input & Output Min/Max adjustments for the Generate LUTs.
+   - Allows creation of piecewise LUTs.
+   - Input acts a filter where gray values outside the range will not be touched (needed to pass through 0 black frequently).
+   - Output acts as a compression range allowing curve shifting. 
+   - Should add a button to save a set of LUTs in a row as a single file LUT. No optimization to concatenate multiple consequetive LUTs. 
 
 1. Use UVTools or similar to extract PNGs of your slices numbered to a folder from your slice file.  `File -> Extract file contents` or `<Ctrl>+<Shift>+E`
    - Recommended: slice files with NO anti-aliasing.  
@@ -79,7 +79,17 @@ With you Python virutal environment active run  `python main.py`.
    - Note: Prints with as thick a grayscale exterior as this process may produce will be softer than normal prior to post curing.  They are more easily damaged during the wash process.  This is visible on some example prints in the `images/` folder as pitting from ultrasonic cavitation and minor gouging down towards the 100% white layers. 
 
 
+### More Details about this first *works nice enought to share* Preset:
 
+ - Details of the preset / config (order matters for the XY Ops):
+   - Currently using 40um layers with Anycubic Texture Gray Resin.
+   - Look Down 4 layers / Fixed Distance Fade 40 px 
+   - Apply LUT -> File -> EXP(LUT)-upShifted.json
+   - Bilateral Filter, diameter 7, Sigma Color 60, Sigma Space 60
+   - Gaussian Blur, kernel 3x3, Sigma (X, Y) 0.8, 0.8
+   - Apply LUT -> Generated -> Input Min / Max 200-255, Output Min/Max 200-255, Param 2.00. *The sauce here it is brings back down bright whites diffused out by the middle 2 filters.  If you look at the slice files the bottom of the curve (200) looks like a lighter halo, but that is just the optical illusion from a few pixel band of gray the same color instead of darkening.*
+   - Shows the utility of the segmented / clipped generation setup for LUTs, pre-baked LUTs like EXP(LUT)-upShifted can be pretty closely copied in 1 or 2 piecewise LUTs.
+   
 
 ### ⚠️ Warnings and Advisories
  - This software comes with no warranties.  Print / slice file corruption and printer defects in handling gray pixels may cause **physical and mechanical damage to your printer**. 
