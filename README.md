@@ -1,6 +1,6 @@
 ## Voxel Stack Blender / Euclidean Distance Slice Blender
 
-An image processing tool designed for improved Z-axis blending[^1] and smoothing of mSLA / SLA resin printing slice files. This also features an expanded toolset of XY blending and smoothing post processors as well as gray scale remapping functions to match voxel growth response to anisotropic resin printing dimensions and conditions. 
+A tool designed for improved Z-axis blending[^1] and smoothing of mSLA / SLA resin printing slice files. This also features an expanded toolset of XY blending and smoothing post processors as well as gray scale remapping functions to match voxel growth response to anisotropic resin printing dimensions and conditions. 
 
 We start with Z-axis blending built upon generating a grayscale gradient of the current working layer with the layer(s) below using a Euclidean distance map and masking operations.  Next is usually applying one of the non-linear grayscale LUTs to combat the logarithmic and strongly thresholded nature of voxel growth along the Z axis.  Then XY blending operations and additional LUT operation stacking are available for smoothing along the XY layer plane.  Resizing is also available for multi-sampling approaches, however the current version will not merge layers along the Z axis.  Prior efforts focused on Z-axis stack merging and sampling for resolution enhancement and height blending. The Euclidean distance gradient has proven much faster, smoother output, and better at retaining detail than direct layer stacking / sampling / blending. 
 
@@ -8,10 +8,22 @@ The Python source here was primarily composed working with LLMs / Generative AI 
 
 Performance is not too bad in Python thanks to Numpy being C under the covers, but if someone would like to port the functionality to native UVTools C# scripting, I would be happy to help.
 
-<details>
-  <summary>Here's some early testing results at 40um layer height.</summary>  
-  ![Example Prints](https://github.com/aaron1138/Voxel-Stack-Blender/blob/main/images/comparison-1920.jpg)
-</details>
+### Recent Results
+
+ - 2025-08-05 - Excellent results with just a couple tweaks to the processing parameterss. Heads up comparison below.
+ - Preset configuration for below results added, presets/Preset-Double-LUT.json.  
+ - Preset requires user to go to the first LUT and reset the mapping to saved_luts/EXP(LUT)-upShifted.json as well as set correct input / output settings.
+ - Simple preset in this order:
+   - Look Down 4 layers / Fixed Distance Fade 40 px 
+   - Apply LUT -> File -> EXP(LUT)-upShifted.json
+   - Bilateral Filter, diameter 7, Sigma Color 60, Sigma Space 60
+   - Gaussian Blur, kernel 3x3, Sigma (X, Y) 0.8, 0.8
+   - Apply LUT -> Generated -> Input Min / Max 200-255, Output Min/Max 200-255, Param 2.00 (the sauce here it is brings back down bright whites bled out by the middle 2 filters)
+   - Shows the utility of the segmented / clipped generation setup for LUTs, pre-baked LUTs like EXP(LUT)-upShifted can be pretty closely copied in 1 or 2 piecewise LUTs
+
+The results: 
+
+
 
 
 
@@ -79,7 +91,7 @@ With you Python virutal environment active run  `python main.py`.
  - Like any other grayscale smoothing this reduces some detail.  I have tried to give as much control via all the nerd knobs as possible without building a slicer from the ground up (don`t currently have those skills - if you do and want to consult, let me know)
  - Increased Rest After Retract / Wait time before cure of 2s for standard layers and a clean has been successful[^3] to help image loading with sparsely filled build plates (i.e. 6-10 minis) on my Saturn 4 Ultra.  I am curious to hear others` findings. 
   
- [^1]: Ummm, legally distinct from vertical and/or 3D anti-aliasing, something, something.... 
+ [^1]: Ummm, legally distinct from vertical and/or 3D anti-aliasing or something like that...
  [^2]: Observed on Saturn 4 Ultra 12k with Dec 2024 or Mar 2025 firmware.  I suppose that is better than lasagna. 
  [^3]: The above missing gray pixels every 4th layer or so lead to increasing rest / wait time mentioned above to mitigate
 
