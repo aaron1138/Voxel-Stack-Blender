@@ -12,7 +12,8 @@ Performance is not too bad in Python thanks to Numpy being C under the covers, b
 
 ![Heads Up Comparison CB Blur 6 vs VBlend Preset - Gale - HSBase - LD4-40px-upShiftedExp(LUT)-Bilateral-PiecewiseLUT](https://github.com/user-attachments/assets/7b0585ce-82d5-4984-865a-40432950c26c)
 
- - 2025-08-05 - Excellent results as seen above with just a couple tweaks to the processing parameterss.
+ - 2025-08-05 - Excellent results as seen above with just a couple tweaks to the processing parameters.  
+ - Input for Voxel-Stack-Blender from Chitubox **not anti-aliased** as the script works better without it.
  - Preset configuration for those results added, presets/Preset-Double-LUT.json.  
  - Preset requires user to go to the first LUT and reset the mapping to saved_luts/EXP(LUT)-upShifted.json as well as set correct input / output settings.
  - Details of the preset / config (order matters):
