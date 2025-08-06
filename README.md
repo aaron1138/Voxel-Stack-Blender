@@ -10,20 +10,18 @@ Performance is not too bad in Python thanks to Numpy being C under the covers, b
 
 ### Recent Results
 
- - 2025-08-05 - Excellent results with just a couple tweaks to the processing parameterss. Heads up comparison below.
- - Preset configuration for below results added, presets/Preset-Double-LUT.json.  
+![Heads Up Comparison CB Blur 6 vs VBlend Preset - Gale - HSBase - LD4-40px-upShiftedExp(LUT)-Bilateral-PiecewiseLUT](https://github.com/user-attachments/assets/7b0585ce-82d5-4984-865a-40432950c26c)
+
+ - 2025-08-05 - Excellent results as seen above with just a couple tweaks to the processing parameterss.
+ - Preset configuration for those results added, presets/Preset-Double-LUT.json.  
  - Preset requires user to go to the first LUT and reset the mapping to saved_luts/EXP(LUT)-upShifted.json as well as set correct input / output settings.
- - Simple preset in this order:
+ - Details of the preset / config (order matters):
    - Look Down 4 layers / Fixed Distance Fade 40 px 
    - Apply LUT -> File -> EXP(LUT)-upShifted.json
    - Bilateral Filter, diameter 7, Sigma Color 60, Sigma Space 60
    - Gaussian Blur, kernel 3x3, Sigma (X, Y) 0.8, 0.8
    - Apply LUT -> Generated -> Input Min / Max 200-255, Output Min/Max 200-255, Param 2.00 (the sauce here it is brings back down bright whites bled out by the middle 2 filters)
    - Shows the utility of the segmented / clipped generation setup for LUTs, pre-baked LUTs like EXP(LUT)-upShifted can be pretty closely copied in 1 or 2 piecewise LUTs
-
-The results: 
-
-
 
 
 
