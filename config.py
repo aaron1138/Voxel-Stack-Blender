@@ -15,7 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-# config.py (Final UI Updates)
+# config.py (Spline Update)
 
 from dataclasses import dataclass, field, asdict, fields
 from typing import List, Optional, Union, Any
@@ -23,10 +23,7 @@ import json
 import os
 import copy
 
-# Define a sensible default for thread count, using system core count
 DEFAULT_NUM_WORKERS = max(1, os.cpu_count() - 1)
-
-# --- Data Classes for Pipeline Operations ---
 
 @dataclass
 class LutParameters:
@@ -45,13 +42,18 @@ class LutParameters:
     exp_param: float = 2.0
     sqrt_param: float = 2.0
     rodbard_param: float = 1.0
+    
+    # NEW: Field to store control points for spline curves.
+    # Format: [[x1, y1], [x2, y2], ...] where x and y are 0-255
+    spline_points: List[List[int]] = field(default_factory=lambda: [[0, 0], [255, 255]])
+
     fixed_lut_path: str = ""
 
     def __post_init__(self):
         # (Validation logic remains the same as previous version)
         self.lut_source = self.lut_source.lower()
         if self.lut_source not in ["generated", "file"]: self.lut_source = "generated"
-        if self.lut_generation_type not in ["linear", "gamma", "s_curve", "log", "exp", "sqrt", "rodbard"]: self.lut_generation_type = "linear"
+        if self.lut_generation_type not in ["linear", "gamma", "s_curve", "log", "exp", "sqrt", "rodbard", "spline"]: self.lut_generation_type = "linear"
         self.input_min = max(0, min(255, self.input_min))
         self.input_max = max(0, min(255, self.input_max))
         if self.input_min > self.input_max: self.input_min, self.input_max = self.input_max, self.input_min
@@ -132,7 +134,7 @@ class Config:
     uvtools_path: str = "C:\\Program Files\\UVTools\\UVToolsCmd.exe"
     uvtools_temp_folder: str = ""
     uvtools_input_file: str = ""
-    uvtools_output_location: str = "working_folder" # NEW: "working_folder" or "input_folder"
+    uvtools_output_location: str = "working_folder"
     uvtools_delete_temp_on_completion: bool = True
 
     # --- Stack Blending Settings ---
@@ -155,7 +157,7 @@ class Config:
 
     @classmethod
     def from_dict(cls, data: dict) -> "Config":
-        # This robust loading method remains the same and will handle the new fields
+        # (This robust loading method remains the same)
         config_instance = cls()
         field_map = {f.name: f for f in fields(cls)}
         for key, value in data.items():
@@ -204,8 +206,6 @@ class Config:
             print(f"Error loading config '{filepath}': {e}. Using default.")
             return cls()
 
-# --- Renaming old config fields for clarity ---
-# This ensures backward compatibility if an old config is loaded.
 def upgrade_config(cfg: Config):
     if hasattr(cfg, 'n_layers'):
         cfg.receding_layers = cfg.n_layers
@@ -217,7 +217,6 @@ def upgrade_config(cfg: Config):
         cfg.fixed_fade_distance_receding = cfg.fixed_fade_distance
         delattr(cfg, 'fixed_fade_distance')
 
-# Global instance of the configuration
 _CONFIG_FILE = "app_config.json"
 app_config = Config.load(_CONFIG_FILE)
-upgrade_config(app_config) # Apply upgrades for backward compatibility
+upgrade_config(app_config)
