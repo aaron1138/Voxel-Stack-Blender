@@ -167,8 +167,9 @@ class ImageProcessorThread(QThread):
     @staticmethod
     def _process_single_image_task(
         current_image_filepath: str,
+        layer_index: int,
         prior_binary_masks_snapshot: collections.deque,
-        processing_core_params: dict,
+        app_config: Config,
         xy_blend_pipeline_ops: List[XYBlendOperation],
         output_folder: str,
         debug_save: bool
@@ -181,10 +182,11 @@ class ImageProcessorThread(QThread):
         debug_info = {'output_folder': output_folder, 'base_filename': os.path.splitext(os.path.basename(current_image_filepath))[0]} if debug_save else None
         prior_white_combined_mask = core.find_prior_combined_white_mask(list(prior_binary_masks_snapshot))
         
-        receding_gradient = core.calculate_receding_gradient_field(
-            current_binary_image, prior_white_combined_mask,
-            processing_core_params['use_fixed_fade_receding'],
-            processing_core_params['fixed_fade_distance_receding'],
+        receding_gradient = core.process_z_blending(
+            current_white_mask,
+            prior_white_combined_mask,
+            app_config,
+            layer_index,
             debug_info=debug_info
         )
 
@@ -255,16 +257,13 @@ class ImageProcessorThread(QThread):
                             self.status_update.emit(f"Skipping unloadable image: {filename}")
                             continue 
                         
-                        processing_core_params = {
-                            'use_fixed_fade_receding': self.app_config.use_fixed_fade_receding,
-                            'fixed_fade_distance_receding': self.app_config.fixed_fade_distance_receding,
-                        }
-                        
+                        numeric_part = get_numeric_part(filename)
                         future = executor.submit(
                             ImageProcessorThread._process_single_image_task,
                             filepath,
+                            numeric_part,
                             collections.deque(prior_binary_masks_cache),
-                            processing_core_params,
+                            self.app_config,
                             self.app_config.xy_blend_pipeline,
                             processing_output_path,
                             self.app_config.debug_save
@@ -311,16 +310,13 @@ class ImageProcessorThread(QThread):
                             self.status_update.emit(f"Skipping unloadable image: {filename}")
                             continue
                         
-                        processing_core_params = {
-                            'use_fixed_fade_receding': self.app_config.use_fixed_fade_receding,
-                            'fixed_fade_distance_receding': self.app_config.fixed_fade_distance_receding,
-                        }
-
+                        numeric_part = get_numeric_part(filename)
                         future = executor.submit(
                             ImageProcessorThread._process_single_image_task,
                             filepath,
+                            numeric_part,
                             collections.deque(prior_binary_masks_cache),
-                            processing_core_params,
+                            self.app_config,
                             self.app_config.xy_blend_pipeline,
                             processing_output_path,
                             self.app_config.debug_save
@@ -482,32 +478,96 @@ class ImageProcessorApp(QWidget):
 
         # --- Stack Blending Section ---
         blending_group = QGroupBox("Stack Blending")
-        blending_layout = QGridLayout(blending_group)
-        
-        blending_layout.addWidget(QLabel("Receding Look Down Layers:"), 0, 0)
+        blending_layout = QVBoxLayout(blending_group)
+
+        # --- Blending Mode Selection ---
+        blending_mode_layout = QHBoxLayout()
+        blending_mode_layout.addWidget(QLabel("Blending Mode:"))
+        self.blending_mode_group = QButtonGroup(self)
+        self.fixed_fade_mode_radio = QRadioButton("Fixed Fade")
+        self.roi_fade_mode_radio = QRadioButton("ROI Fade")
+        self.blending_mode_group.addButton(self.fixed_fade_mode_radio, 0)
+        self.blending_mode_group.addButton(self.roi_fade_mode_radio, 1)
+        blending_mode_layout.addWidget(self.fixed_fade_mode_radio)
+        blending_mode_layout.addWidget(self.roi_fade_mode_radio)
+        blending_mode_layout.addStretch(1)
+        blending_layout.addLayout(blending_mode_layout)
+
+        # --- Common Blending Settings ---
+        common_blending_layout = QGridLayout()
+        common_blending_layout.addWidget(QLabel("Receding Look Down Layers:"), 0, 0)
         self.receding_layers_edit = QLineEdit("3")
         self.receding_layers_edit.setValidator(QIntValidator(0, 100, self))
-        blending_layout.addWidget(self.receding_layers_edit, 0, 1)
-        
+        common_blending_layout.addWidget(self.receding_layers_edit, 0, 1)
+        common_blending_layout.setColumnStretch(2, 1) # Add stretch
+        blending_layout.addLayout(common_blending_layout)
+
+        # --- Blending Settings Stacked Widget ---
+        self.blending_stacked_widget = QStackedWidget()
+        blending_layout.addWidget(self.blending_stacked_widget)
+
+        # --- Page 0: Fixed Fade Mode ---
+        fixed_fade_widget = QWidget()
+        fixed_fade_layout = QGridLayout(fixed_fade_widget)
         self.fixed_fade_receding_checkbox = QCheckBox("Use Fixed Fade Distance")
-        blending_layout.addWidget(self.fixed_fade_receding_checkbox, 0, 2)
+        fixed_fade_layout.addWidget(self.fixed_fade_receding_checkbox, 0, 0)
         self.fade_dist_receding_edit = QLineEdit("10.0")
         self.fade_dist_receding_edit.setValidator(QDoubleValidator(0.1, 1000.0, 2, self))
-        blending_layout.addWidget(self.fade_dist_receding_edit, 0, 3)
+        fixed_fade_layout.addWidget(self.fade_dist_receding_edit, 0, 1)
+        fixed_fade_layout.setColumnStretch(2, 1)
+        self.blending_stacked_widget.addWidget(fixed_fade_widget)
 
-        # Mocked up Overhang controls
-        blending_layout.addWidget(QLabel("Overhang Look Up Layers: (Disabled / WiP)"), 1, 0)
+        # --- Page 1: ROI Fade Mode ---
+        roi_fade_widget = QWidget()
+        roi_fade_layout = QVBoxLayout(roi_fade_widget)
+
+        main_roi_layout = QGridLayout()
+        main_roi_layout.addWidget(QLabel("Min ROI Size (pixels):"), 0, 0)
+        self.roi_min_size_edit = QLineEdit("100")
+        self.roi_min_size_edit.setValidator(QIntValidator(1, 1000000, self))
+        main_roi_layout.addWidget(self.roi_min_size_edit, 0, 1)
+        main_roi_layout.setColumnStretch(2, 1)
+        roi_fade_layout.addLayout(main_roi_layout)
+
+        self.raft_support_group = QGroupBox("Raft & Support Handling")
+        self.raft_support_group.setCheckable(True)
+        raft_support_layout = QGridLayout(self.raft_support_group)
+        raft_support_layout.addWidget(QLabel("Raft Layers (from bottom):"), 0, 0)
+        self.raft_layer_count_edit = QLineEdit("5")
+        self.raft_layer_count_edit.setValidator(QIntValidator(0, 1000))
+        raft_support_layout.addWidget(self.raft_layer_count_edit, 0, 1)
+        raft_support_layout.addWidget(QLabel("Raft Min Size (pixels):"), 0, 2)
+        self.raft_min_size_edit = QLineEdit("10000")
+        self.raft_min_size_edit.setValidator(QIntValidator(0, 100000000))
+        raft_support_layout.addWidget(self.raft_min_size_edit, 0, 3)
+        raft_support_layout.addWidget(QLabel("Support Max Size (pixels):"), 1, 0)
+        self.support_max_size_edit = QLineEdit("500")
+        self.support_max_size_edit.setValidator(QIntValidator(0, 1000000))
+        raft_support_layout.addWidget(self.support_max_size_edit, 1, 1)
+
+        note_label = QLabel("<i>Note: Classified rafts and supports will be ignored (no gradient processing).</i>")
+        note_label.setWordWrap(True)
+        raft_support_layout.addWidget(note_label, 2, 0, 1, 4)
+
+        roi_fade_layout.addWidget(self.raft_support_group)
+        roi_fade_layout.addStretch(1)
+
+        self.blending_stacked_widget.addWidget(roi_fade_widget)
+
+        # --- Overhang (Common) ---
+        overhang_layout = QGridLayout()
+        overhang_layout.addWidget(QLabel("Overhang Look Up Layers: (Disabled / WiP)"), 0, 0)
         self.overhang_layers_edit = QLineEdit("0")
         self.overhang_layers_edit.setEnabled(False)
-        blending_layout.addWidget(self.overhang_layers_edit, 1, 1)
-        
+        overhang_layout.addWidget(self.overhang_layers_edit, 0, 1)
         self.fixed_fade_overhang_checkbox = QCheckBox("Use Fixed Fade Distance (Disabled / WiP)")
         self.fixed_fade_overhang_checkbox.setEnabled(False)
-        blending_layout.addWidget(self.fixed_fade_overhang_checkbox, 1, 2)
+        overhang_layout.addWidget(self.fixed_fade_overhang_checkbox, 0, 2)
         self.fade_dist_overhang_edit = QLineEdit("10.0")
         self.fade_dist_overhang_edit.setEnabled(False)
-        blending_layout.addWidget(self.fade_dist_overhang_edit, 1, 3)
-        
+        overhang_layout.addWidget(self.fade_dist_overhang_edit, 0, 3)
+        blending_layout.addLayout(overhang_layout)
+
         main_processing_layout.addWidget(blending_group)
         
         # --- General Settings Section ---
@@ -559,6 +619,7 @@ class ImageProcessorApp(QWidget):
         self.uvtools_temp_folder_button.clicked.connect(lambda: self.browse_folder(self.uvtools_temp_folder_edit))
         self.uvtools_input_file_button.clicked.connect(lambda: self.browse_file(self.uvtools_input_file_edit, "Select Input Slice File"))
         self.input_mode_group.idClicked.connect(self.on_input_mode_changed)
+        self.blending_mode_group.idClicked.connect(self.on_blending_mode_changed)
         self.save_config_button.clicked.connect(self._save_config_to_file)
         self.load_config_button.clicked.connect(self._load_config_from_file)
         self.start_stop_button.clicked.connect(self.toggle_processing)
@@ -572,6 +633,9 @@ class ImageProcessorApp(QWidget):
 
     def on_input_mode_changed(self, stack_index):
         self.io_stacked_widget.setCurrentIndex(stack_index)
+
+    def on_blending_mode_changed(self, stack_index):
+        self.blending_stacked_widget.setCurrentIndex(stack_index)
 
     def browse_folder(self, line_edit):
         folder = QFileDialog.getExistingDirectory(self, "Select Folder", line_edit.text())
@@ -602,6 +666,16 @@ class ImageProcessorApp(QWidget):
         self.receding_layers_edit.setText(str(config.receding_layers))
         self.fixed_fade_receding_checkbox.setChecked(config.use_fixed_fade_receding)
         self.fade_dist_receding_edit.setText(str(config.fixed_fade_distance_receding))
+
+        self.fixed_fade_mode_radio.setChecked(config.blending_mode == "fixed_fade")
+        self.roi_fade_mode_radio.setChecked(config.blending_mode == "roi_fade")
+        self.blending_stacked_widget.setCurrentIndex(1 if config.blending_mode == "roi_fade" else 0)
+        self.roi_min_size_edit.setText(str(config.roi_params.min_size))
+        self.raft_support_group.setChecked(config.roi_params.enable_raft_support_handling)
+        self.raft_layer_count_edit.setText(str(config.roi_params.raft_layer_count))
+        self.raft_min_size_edit.setText(str(config.roi_params.raft_min_size))
+        self.support_max_size_edit.setText(str(config.roi_params.support_max_size))
+
         self.overhang_layers_edit.setText(str(config.overhang_layers))
         self.fixed_fade_overhang_checkbox.setChecked(config.use_fixed_fade_overhang)
         self.fade_dist_overhang_edit.setText(str(config.fixed_fade_distance_overhang))
@@ -625,6 +699,27 @@ class ImageProcessorApp(QWidget):
         config.uvtools_input_file = self.uvtools_input_file_edit.text()
         config.uvtools_delete_temp_on_completion = self.uvtools_cleanup_checkbox.isChecked()
         config.uvtools_output_location = "input_folder" if self.uvtools_output_input_radio.isChecked() else "working_folder"
+
+        config.blending_mode = "roi_fade" if self.roi_fade_mode_radio.isChecked() else "fixed_fade"
+        try:
+            config.roi_params.min_size = int(self.roi_min_size_edit.text())
+        except ValueError:
+            config.roi_params.min_size = 100
+
+        config.roi_params.enable_raft_support_handling = self.raft_support_group.isChecked()
+        try:
+            config.roi_params.raft_layer_count = int(self.raft_layer_count_edit.text())
+        except ValueError:
+            config.roi_params.raft_layer_count = 5
+        try:
+            config.roi_params.raft_min_size = int(self.raft_min_size_edit.text())
+        except ValueError:
+            config.roi_params.raft_min_size = 10000
+        try:
+            config.roi_params.support_max_size = int(self.support_max_size_edit.text())
+        except ValueError:
+            config.roi_params.support_max_size = 500
+
         try: config.receding_layers = int(self.receding_layers_edit.text())
         except ValueError: config.receding_layers = 3
         config.use_fixed_fade_receding = self.fixed_fade_receding_checkbox.isChecked()

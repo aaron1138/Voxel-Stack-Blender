@@ -119,6 +119,20 @@ class XYBlendOperation:
         return LutParameters(**filtered_lut_data)
 
 @dataclass
+class RoiParameters:
+    """
+    Parameters for ROI (Region of Interest) processing.
+    """
+    min_size: int = 100
+
+    # Raft/Support detection settings
+    enable_raft_support_handling: bool = False
+    raft_layer_count: int = 5
+    raft_min_size: int = 10000
+    support_max_size: int = 500
+
+
+@dataclass
 class Config:
     """
     Main application configuration, updated with new UI fields.
@@ -138,6 +152,7 @@ class Config:
     uvtools_delete_temp_on_completion: bool = True
 
     # --- Stack Blending Settings ---
+    blending_mode: str = "fixed_fade"  # "fixed_fade" or "roi_fade"
     receding_layers: int = 3
     use_fixed_fade_receding: bool = False
     fixed_fade_distance_receding: float = 10.0
@@ -146,6 +161,9 @@ class Config:
     overhang_layers: int = 0
     use_fixed_fade_overhang: bool = False
     fixed_fade_distance_overhang: float = 10.0
+
+    # --- ROI Mode Settings ---
+    roi_params: RoiParameters = field(default_factory=RoiParameters)
 
     # --- General Settings ---
     thread_count: int = DEFAULT_NUM_WORKERS
@@ -174,6 +192,11 @@ class Config:
                                 filtered_op_data['lut_params'] = XYBlendOperation.from_dict_to_lut_params(filtered_op_data['lut_params'])
                             pipeline_list.append(XYBlendOperation(**filtered_op_data))
                     setattr(config_instance, key, pipeline_list)
+                elif key == 'roi_params':
+                    if isinstance(value, dict):
+                        roi_field_names = {f.name for f in fields(RoiParameters)}
+                        filtered_roi_data = {k: v for k, v in value.items() if k in roi_field_names}
+                        setattr(config_instance, key, RoiParameters(**filtered_roi_data))
                 else:
                     if field_obj.type is bool and isinstance(value, str):
                         value = value.lower() in ('true', '1', 't', 'y')
