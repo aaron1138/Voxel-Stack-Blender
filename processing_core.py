@@ -148,31 +148,11 @@ def _calculate_receding_gradient_field_fixed_fade(current_white_mask, prior_whit
     final_gradient_map = cv2.bitwise_and(final_gradient_map, final_gradient_map, mask=receding_white_areas)
     return final_gradient_map
 
-def classify_roi(roi, layer_index, config):
-    """Classifies an ROI as 'model', 'raft', or 'support' based on heuristics."""
-    if not config.roi_params.enable_raft_support_handling:
-        return "model"
-
-    # Raft classification
-    if layer_index < config.roi_params.raft_layer_count:
-        if roi['area'] >= config.roi_params.raft_min_size:
-            return "raft"
-
-    # Support classification
-    if roi['area'] <= config.roi_params.support_max_size:
-        return "support"
-
-    return "model"
-
-def _calculate_receding_gradient_field_roi_fade(current_white_mask, prior_white_combined_mask, config, layer_index=0, debug_info=None):
+def _calculate_receding_gradient_field_roi_fade(current_white_mask, prior_white_combined_mask, config, classified_rois, debug_info=None):
     """
     Calculates receding gradients on a per-ROI basis to isolate fades.
     """
-    if prior_white_combined_mask is None:
-        return np.zeros_like(current_white_mask, dtype=np.uint8)
-
-    rois = identify_rois(current_white_mask, config.roi_params.min_size)
-    if not rois:
+    if prior_white_combined_mask is None or not classified_rois:
         return np.zeros_like(current_white_mask, dtype=np.uint8)
 
     final_gradient_map = np.zeros_like(current_white_mask, dtype=np.uint8)
@@ -180,15 +160,14 @@ def _calculate_receding_gradient_field_roi_fade(current_white_mask, prior_white_
     global_receding_areas = cv2.bitwise_and(prior_white_combined_mask, cv2.bitwise_not(current_white_mask))
     if cv2.countNonZero(global_receding_areas) == 0:
         return np.zeros_like(current_white_mask, dtype=np.uint8)
-    
+
     if debug_info:
         cv2.imwrite(os.path.join(debug_info['output_folder'], f"{debug_info['base_filename']}_debug_03a_global_receding_areas.png"), global_receding_areas)
 
-    for i, roi in enumerate(rois):
-        classification = classify_roi(roi, layer_index, config)
-        if config.roi_params.enable_raft_support_handling and classification in ["raft", "support"]:
+    for i, roi in enumerate(classified_rois):
+        if config.roi_params.enable_raft_support_handling and roi['classification'] in ["raft", "support"]:
             if debug_info:
-                print(f"Skipping ROI {i} (area: {roi['area']}) at layer {layer_index}, classified as {classification}.")
+                print(f"Skipping ROI {roi.get('id', i)} (area: {roi['area']}), classified as {roi['classification']}.")
             continue
 
         roi_mask = roi['mask']
@@ -236,7 +215,7 @@ def _calculate_receding_gradient_field_roi_fade(current_white_mask, prior_white_
 
     return final_gradient_map
 
-def process_z_blending(current_white_mask, prior_white_combined_mask, config, layer_index=0, debug_info=None):
+def process_z_blending(current_white_mask, prior_white_combined_mask, config, classified_rois, debug_info=None):
     """
     Main entry point for Z-axis blending. Dispatches to the correct blending mode.
     """
@@ -245,7 +224,7 @@ def process_z_blending(current_white_mask, prior_white_combined_mask, config, la
             current_white_mask,
             prior_white_combined_mask,
             config,
-            layer_index,
+            classified_rois,
             debug_info
         )
     else: # Default to fixed_fade

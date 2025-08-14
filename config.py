@@ -130,6 +130,8 @@ class RoiParameters:
     raft_layer_count: int = 5
     raft_min_size: int = 10000
     support_max_size: int = 500
+    support_max_layer: int = 1000
+    support_max_growth: float = 2.5
 
 
 @dataclass
@@ -138,6 +140,7 @@ class Config:
     Main application configuration, updated with new UI fields.
     """
     # --- I/O Settings ---
+    output_file_prefix: str = "Voxel_Blend_Processed_"
     input_mode: str = "folder" # "folder" or "uvtools"
     input_folder: str = ""
     output_folder: str = ""

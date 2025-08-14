@@ -42,6 +42,7 @@ import processing_core as core
 import xy_blend_processor
 import lut_manager
 from pyside_xy_blend_tab import XYBlendTab
+from roi_tracker import ROITracker
 
 class ImageProcessorThread(QThread):
     """
@@ -66,7 +67,7 @@ class ImageProcessorThread(QThread):
         """
         self.status_update.emit("Starting UVTools slice extraction...")
         
-        self.session_temp_folder = os.path.join(self.app_config.uvtools_temp_folder, f"Voxel_Stack_Blender_{self.run_timestamp}")
+        self.session_temp_folder = os.path.join(self.app_config.uvtools_temp_folder, f"{self.app_config.output_file_prefix}{self.run_timestamp}")
         input_folder = os.path.join(self.session_temp_folder, "Input")
         output_folder = os.path.join(self.session_temp_folder, "Output")
         
@@ -133,7 +134,7 @@ class ImageProcessorThread(QThread):
         self.status_update.emit("Repacking slice file with processed layers...")
 
         original_filename = os.path.basename(self.app_config.uvtools_input_file)
-        output_filename = f"Voxel_Blend_Processed_{self.run_timestamp}_{original_filename}"
+        output_filename = f"{self.app_config.output_file_prefix}{self.run_timestamp}_{original_filename}"
         
         # NEW: Determine final output directory based on config
         output_directory = ""
@@ -166,8 +167,7 @@ class ImageProcessorThread(QThread):
 
     @staticmethod
     def _process_single_image_task(
-        current_image_filepath: str,
-        layer_index: int,
+        image_data: dict,
         prior_binary_masks_snapshot: collections.deque,
         app_config: Config,
         xy_blend_pipeline_ops: List[XYBlendOperation],
@@ -175,31 +175,35 @@ class ImageProcessorThread(QThread):
         debug_save: bool
     ) -> str:
         """Processes a single image completely. This function runs in a worker thread."""
-        current_binary_image, original_image = core.load_image(current_image_filepath)
-        if current_binary_image is None:
-            raise RuntimeError(f"Could not load image: {current_image_filepath}")
+        current_binary_image = image_data['binary_image']
+        original_image = image_data['original_image']
+        filepath = image_data['filepath']
 
-        debug_info = {'output_folder': output_folder, 'base_filename': os.path.splitext(os.path.basename(current_image_filepath))[0]} if debug_save else None
+        debug_info = {'output_folder': output_folder, 'base_filename': os.path.splitext(os.path.basename(filepath))[0]} if debug_save else None
         prior_white_combined_mask = core.find_prior_combined_white_mask(list(prior_binary_masks_snapshot))
         
         receding_gradient = core.process_z_blending(
-            current_white_mask,
+            current_binary_image,
             prior_white_combined_mask,
             app_config,
-            layer_index,
+            image_data['classified_rois'],
             debug_info=debug_info
         )
 
         output_image_from_core = core.merge_to_output(original_image, receding_gradient)
         final_processed_image = xy_blend_processor.process_xy_pipeline(output_image_from_core, xy_blend_pipeline_ops)
 
-        output_filename = os.path.basename(current_image_filepath)
+        output_filename = os.path.basename(filepath)
         output_filepath = os.path.join(output_folder, output_filename)
         cv2.imwrite(output_filepath, final_processed_image)
         return output_filepath
 
     def run(self):
-        """The main processing loop, orchestrating the full extract-process-repack workflow."""
+        """
+        The main processing loop.
+        Refactored for stateful ROI tracking: lightweight sequential processing in this
+        thread, heavyweight gradient calculation dispatched to worker threads.
+        """
         self.status_update.emit("Processing started...")
         
         numeric_pattern = re.compile(r'(\d+)\.\w+$')
@@ -238,98 +242,69 @@ class ImageProcessorThread(QThread):
                 return
 
             prior_binary_masks_cache = collections.deque(maxlen=self.app_config.receding_layers)
+            tracker = ROITracker()
             
-            active_futures = set()
-            processed_count = 0
-            submitted_count = 0
-
-            filename_iterator = iter(image_filenames_filtered)
-
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                # 1. Prime the pump
-                for _ in range(self.max_workers):
-                    try:
-                        filename = next(filename_iterator)
-                        filepath = os.path.join(input_path, filename)
-                        
-                        current_binary_image_for_cache, _ = core.load_image(filepath)
-                        if current_binary_image_for_cache is None:
-                            self.status_update.emit(f"Skipping unloadable image: {filename}")
-                            continue 
-                        
-                        numeric_part = get_numeric_part(filename)
-                        future = executor.submit(
-                            ImageProcessorThread._process_single_image_task,
-                            filepath,
-                            numeric_part,
-                            collections.deque(prior_binary_masks_cache),
-                            self.app_config,
-                            self.app_config.xy_blend_pipeline,
-                            processing_output_path,
-                            self.app_config.debug_save
-                        )
-                        active_futures.add(future)
-                        prior_binary_masks_cache.append(current_binary_image_for_cache)
-                        submitted_count += 1
-                        self.status_update.emit(f"Submitting {filename} ({submitted_count}/{total_images})")
-                    except StopIteration:
-                        break
+                # A list to hold futures so we can check for exceptions
+                active_futures = []
 
-                # 2. Main processing loop
-                while active_futures:
+                for i, filename in enumerate(image_filenames_filtered):
                     if not self._is_running:
                         self.status_update.emit("Processing stopped by user.")
                         break
 
-                    done, _ = concurrent.futures.wait(active_futures, return_when=concurrent.futures.FIRST_COMPLETED)
+                    self.status_update.emit(f"Analyzing {filename} ({i + 1}/{total_images})")
+                    filepath = os.path.join(input_path, filename)
 
-                    for future in done:
-                        active_futures.remove(future)
-                        try:
-                            output_path = future.result()
-                            processed_count += 1
-                            self.status_update.emit(f"Completed: {os.path.basename(output_path)} ({processed_count}/{total_images})")
-                            self.progress_update.emit(int((processed_count / total_images) * 100))
-                        except Exception as exc:
-                            import traceback
-                            error_detail = f"An image processing task failed: {exc}\n{traceback.format_exc()}"
-                            self.error_signal.emit(error_detail)
-                            self._is_running = False
-                            break
+                    binary_image, original_image = core.load_image(filepath)
+                    if binary_image is None:
+                        self.status_update.emit(f"Skipping unloadable image: {filename}")
+                        continue
 
-                    if not self._is_running:
-                        break
+                    classified_rois = []
+                    if self.app_config.blending_mode == 'roi_fade':
+                        layer_index = get_numeric_part(filename)
+                        rois = core.identify_rois(binary_image, self.app_config.roi_params.min_size)
+                        classified_rois = tracker.update_and_classify(rois, layer_index, self.app_config)
 
-                    # Submit new tasks
-                    try:
-                        filename = next(filename_iterator)
-                        filepath = os.path.join(input_path, filename)
-                        
-                        current_binary_image_for_cache, _ = core.load_image(filepath)
-                        if current_binary_image_for_cache is None:
-                            self.status_update.emit(f"Skipping unloadable image: {filename}")
-                            continue
-                        
-                        numeric_part = get_numeric_part(filename)
-                        future = executor.submit(
-                            ImageProcessorThread._process_single_image_task,
-                            filepath,
-                            numeric_part,
-                            collections.deque(prior_binary_masks_cache),
-                            self.app_config,
-                            self.app_config.xy_blend_pipeline,
-                            processing_output_path,
-                            self.app_config.debug_save
-                        )
-                        active_futures.add(future)
-                        prior_binary_masks_cache.append(current_binary_image_for_cache)
-                        submitted_count += 1
-                        self.status_update.emit(f"Submitting {filename} ({submitted_count}/{total_images})")
-                    except StopIteration:
-                        pass
+                    image_data_for_task = {
+                        'filepath': filepath,
+                        'binary_image': binary_image,
+                        'original_image': original_image,
+                        'classified_rois': classified_rois
+                    }
+
+                    future = executor.submit(
+                        ImageProcessorThread._process_single_image_task,
+                        image_data_for_task,
+                        collections.deque(prior_binary_masks_cache),
+                        self.app_config,
+                        self.app_config.xy_blend_pipeline,
+                        processing_output_path,
+                        self.app_config.debug_save
+                    )
+                    active_futures.append(future)
+
+                    prior_binary_masks_cache.append(binary_image)
                 
-                if self._is_running and processed_count == total_images:
-                    self.progress_update.emit(100)
+                # Wait for all futures to complete and check for errors
+                processed_count = 0
+                for future in concurrent.futures.as_completed(active_futures):
+                    if not self._is_running: break
+                    try:
+                        future.result() # Raise exception if one occurred
+                        processed_count += 1
+                        self.status_update.emit(f"Completed processing images ({processed_count}/{total_images})")
+                        self.progress_update.emit(int((processed_count / total_images) * 100))
+                    except Exception as exc:
+                        import traceback
+                        error_detail = f"An image processing task failed: {exc}\n{traceback.format_exc()}"
+                        self.error_signal.emit(error_detail)
+                        self._is_running = False
+                        # Cancel remaining futures
+                        for f in active_futures:
+                            f.cancel()
+                        break
             
             self.status_update.emit("All image processing tasks completed.")
 
@@ -464,9 +439,9 @@ class ImageProcessorApp(QWidget):
         uvtools_mode_layout.addWidget(self.uvtools_output_input_radio, 5, 1)
         self.uvtools_output_working_radio.setChecked(True)
 
-        output_note_label = QLabel("<i>Output file will be named \"Voxel_Blend_Processed_&lt;date-time&gt;_&lt;original-filename&gt;\"</i>")
-        output_note_label.setWordWrap(True)
-        uvtools_mode_layout.addWidget(output_note_label, 6, 1, 1, 2)
+        uvtools_mode_layout.addWidget(QLabel("Output File Prefix:"), 6, 0)
+        self.output_prefix_edit = QLineEdit("Voxel_Blend_Processed_")
+        uvtools_mode_layout.addWidget(self.output_prefix_edit, 6, 1, 1, 2)
         
         self.uvtools_cleanup_checkbox = QCheckBox("Delete Temporary Files on Completion")
         self.uvtools_cleanup_checkbox.setChecked(True)
@@ -545,9 +520,19 @@ class ImageProcessorApp(QWidget):
         self.support_max_size_edit.setValidator(QIntValidator(0, 1000000))
         raft_support_layout.addWidget(self.support_max_size_edit, 1, 1)
 
-        note_label = QLabel("<i>Note: Classified rafts and supports will be ignored (no gradient processing).</i>")
+        raft_support_layout.addWidget(QLabel("Max Support Layer:"), 1, 2)
+        self.support_max_layer_edit = QLineEdit("1000")
+        self.support_max_layer_edit.setValidator(QIntValidator(0, 100000))
+        raft_support_layout.addWidget(self.support_max_layer_edit, 1, 3)
+
+        raft_support_layout.addWidget(QLabel("Max Support Growth (%):"), 2, 0)
+        self.support_max_growth_edit = QLineEdit("150.0")
+        self.support_max_growth_edit.setValidator(QDoubleValidator(0.0, 10000.0, 1))
+        raft_support_layout.addWidget(self.support_max_growth_edit, 2, 1)
+
+        note_label = QLabel("<i>Note: Classified rafts/supports are ignored. Growth factor is used to reclassify supports as model.</i>")
         note_label.setWordWrap(True)
-        raft_support_layout.addWidget(note_label, 2, 0, 1, 4)
+        raft_support_layout.addWidget(note_label, 3, 0, 1, 4)
 
         roi_fade_layout.addWidget(self.raft_support_group)
         roi_fade_layout.addStretch(1)
@@ -660,6 +645,7 @@ class ImageProcessorApp(QWidget):
         self.uvtools_path_edit.setText(config.uvtools_path)
         self.uvtools_temp_folder_edit.setText(config.uvtools_temp_folder)
         self.uvtools_input_file_edit.setText(config.uvtools_input_file)
+        self.output_prefix_edit.setText(config.output_file_prefix)
         self.uvtools_cleanup_checkbox.setChecked(config.uvtools_delete_temp_on_completion)
         self.uvtools_output_working_radio.setChecked(config.uvtools_output_location == "working_folder")
         self.uvtools_output_input_radio.setChecked(config.uvtools_output_location == "input_folder")
@@ -675,6 +661,8 @@ class ImageProcessorApp(QWidget):
         self.raft_layer_count_edit.setText(str(config.roi_params.raft_layer_count))
         self.raft_min_size_edit.setText(str(config.roi_params.raft_min_size))
         self.support_max_size_edit.setText(str(config.roi_params.support_max_size))
+        self.support_max_layer_edit.setText(str(config.roi_params.support_max_layer))
+        self.support_max_growth_edit.setText(f"{(config.roi_params.support_max_growth - 1.0) * 100.0:.1f}")
 
         self.overhang_layers_edit.setText(str(config.overhang_layers))
         self.fixed_fade_overhang_checkbox.setChecked(config.use_fixed_fade_overhang)
@@ -697,6 +685,7 @@ class ImageProcessorApp(QWidget):
         config.uvtools_path = self.uvtools_path_edit.text()
         config.uvtools_temp_folder = self.uvtools_temp_folder_edit.text()
         config.uvtools_input_file = self.uvtools_input_file_edit.text()
+        config.output_file_prefix = self.output_prefix_edit.text()
         config.uvtools_delete_temp_on_completion = self.uvtools_cleanup_checkbox.isChecked()
         config.uvtools_output_location = "input_folder" if self.uvtools_output_input_radio.isChecked() else "working_folder"
 
@@ -719,6 +708,14 @@ class ImageProcessorApp(QWidget):
             config.roi_params.support_max_size = int(self.support_max_size_edit.text())
         except ValueError:
             config.roi_params.support_max_size = 500
+        try:
+            config.roi_params.support_max_layer = int(self.support_max_layer_edit.text())
+        except ValueError:
+            config.roi_params.support_max_layer = 1000
+        try:
+            config.roi_params.support_max_growth = (float(self.support_max_growth_edit.text().replace(',', '.')) / 100.0) + 1.0
+        except ValueError:
+            config.roi_params.support_max_growth = 2.5
 
         try: config.receding_layers = int(self.receding_layers_edit.text())
         except ValueError: config.receding_layers = 3
