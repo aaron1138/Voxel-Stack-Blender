@@ -18,324 +18,19 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 # ui_components.py (Final Touches)
 
 import os
-import re
-import cv2
-import concurrent.futures
-import collections
-import numpy as np
-from typing import List
-import subprocess
-import datetime
 import shutil
-
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QProgressBar, QFileDialog, QMessageBox, QCheckBox,
     QTabWidget, QGroupBox, QRadioButton, QButtonGroup, QStackedWidget,
     QGridLayout, QFrame
 )
-from PySide6.QtCore import QThread, Signal, Slot, Qt, QSettings
+from PySide6.QtCore import Slot, Qt, QSettings
 from PySide6.QtGui import QIntValidator, QDoubleValidator
 
-from config import app_config as config, Config, XYBlendOperation, LutParameters, DEFAULT_NUM_WORKERS, upgrade_config
-import processing_core as core
-import xy_blend_processor
-import lut_manager
+from config import app_config as config, Config, DEFAULT_NUM_WORKERS, upgrade_config
 from pyside_xy_blend_tab import XYBlendTab
-from roi_tracker import ROITracker
-
-class ImageProcessorThread(QThread):
-    """
-    Manages the image processing pipeline in a separate thread to keep the GUI responsive.
-    """
-    status_update = Signal(str)
-    progress_update = Signal(int)
-    error_signal = Signal(str)
-    finished_signal = Signal()
-
-    def __init__(self, app_config: Config, max_workers: int):
-        super().__init__()
-        self.app_config = app_config
-        self._is_running = True
-        self.max_workers = max_workers
-        self.run_timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        self.session_temp_folder = ""
-
-    def _run_uvtools_extraction(self) -> str:
-        """
-        Executes UVToolsCmd.exe to extract layers into a timestamped temp folder.
-        """
-        self.status_update.emit("Starting UVTools slice extraction...")
-        
-        self.session_temp_folder = os.path.join(self.app_config.uvtools_temp_folder, f"{self.app_config.output_file_prefix}{self.run_timestamp}")
-        input_folder = os.path.join(self.session_temp_folder, "Input")
-        output_folder = os.path.join(self.session_temp_folder, "Output")
-        
-        os.makedirs(input_folder, exist_ok=True)
-        os.makedirs(output_folder, exist_ok=True)
-
-        command = [
-            self.app_config.uvtools_path, "extract", self.app_config.uvtools_input_file,
-            input_folder, "--content", "Layers"
-        ]
-        self.status_update.emit(f"Running command: {' '.join(command)}")
-        
-        try:
-            creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-            process = subprocess.run(command, capture_output=True, text=True, creationflags=creation_flags)
-            print(f"UVToolsCmd.exe (extract) finished with exit code: {process.returncode}")
-            if process.returncode not in [0, 1]:
-                raise RuntimeError(f"UVTools exited with an error (code {process.returncode}):\n\n{process.stderr}")
-            self.status_update.emit("UVTools extraction completed.")
-            return input_folder
-        except Exception as e:
-            raise RuntimeError(f"UVTools extraction failed: {e}")
-
-    def _generate_uvtop_file(self, processed_images_folder: str) -> str:
-        """Generates the .uvtop XML file for repacking."""
-        self.status_update.emit("Generating UVTools operation file...")
-        
-        numeric_pattern = re.compile(r'(\d+)\.\w+$')
-        def get_numeric_part(filename):
-            match = numeric_pattern.search(filename)
-            return int(match.group(1)) if match else float('inf')
-            
-        processed_files = sorted(
-            [os.path.join(processed_images_folder, f) for f in os.listdir(processed_images_folder) if f.lower().endswith('.png')],
-            key=get_numeric_part
-        )
-
-        if not processed_files:
-            raise RuntimeError("No processed image files found to generate .uvtop file.")
-
-        xml_content = '<?xml version="1.0" encoding="utf-8" standalone="no"?>\n'
-        xml_content += '<OperationLayerImport xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">\n'
-        xml_content += '  <LayerRangeSelection>None</LayerRangeSelection>\n'
-        xml_content += '  <ImportType>Replace</ImportType>\n'
-        xml_content += '  <Files>\n'
-        for f_path in processed_files:
-            xml_content += '    <GenericFileRepresentation>\n'
-            xml_content += f'      <FilePath>{f_path}</FilePath>\n'
-            xml_content += '    </GenericFileRepresentation>\n'
-        xml_content += '  </Files>\n'
-        xml_content += '</OperationLayerImport>\n'
-
-        uvtop_filename = f"repack_operations_{self.run_timestamp}.uvtop"
-        uvtop_filepath = os.path.join(self.session_temp_folder, uvtop_filename)
-        
-        with open(uvtop_filepath, 'w', encoding='utf-8') as f:
-            f.write(xml_content)
-            
-        self.status_update.emit("Operation file generated.")
-        return uvtop_filepath
-
-    def _run_uvtools_repack(self, uvtop_filepath: str):
-        """Executes UVToolsCmd.exe to repack the processed layers."""
-        self.status_update.emit("Repacking slice file with processed layers...")
-
-        original_filename = os.path.basename(self.app_config.uvtools_input_file)
-        output_filename = f"{self.app_config.output_file_prefix}{self.run_timestamp}_{original_filename}"
-        
-        # NEW: Determine final output directory based on config
-        output_directory = ""
-        if self.app_config.uvtools_output_location == "input_folder":
-            output_directory = os.path.dirname(self.app_config.uvtools_input_file)
-        else: # Default to working_folder
-            output_directory = self.app_config.uvtools_temp_folder
-
-        final_output_path = os.path.join(output_directory, output_filename)
-
-        command = [
-            self.app_config.uvtools_path,
-            "run",
-            self.app_config.uvtools_input_file,
-            uvtop_filepath,
-            "--output",
-            final_output_path
-        ]
-        self.status_update.emit(f"Running command: {' '.join(command)}")
-
-        try:
-            creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-            process = subprocess.run(command, capture_output=True, text=True, creationflags=creation_flags)
-            print(f"UVToolsCmd.exe (run) finished with exit code: {process.returncode}")
-            if process.returncode not in [0, 1]:
-                raise RuntimeError(f"UVTools exited with an error (code {process.returncode}):\n\n{process.stderr}")
-            self.status_update.emit(f"Successfully created: {output_filename}")
-        except Exception as e:
-            raise RuntimeError(f"UVTools repacking failed: {e}")
-
-    @staticmethod
-    def _process_single_image_task(
-        image_data: dict,
-        prior_binary_masks_snapshot: collections.deque,
-        app_config: Config,
-        xy_blend_pipeline_ops: List[XYBlendOperation],
-        output_folder: str,
-        debug_save: bool
-    ) -> str:
-        """Processes a single image completely. This function runs in a worker thread."""
-        current_binary_image = image_data['binary_image']
-        original_image = image_data['original_image']
-        filepath = image_data['filepath']
-
-        debug_info = {'output_folder': output_folder, 'base_filename': os.path.splitext(os.path.basename(filepath))[0]} if debug_save else None
-        prior_white_combined_mask = core.find_prior_combined_white_mask(list(prior_binary_masks_snapshot))
-        
-        receding_gradient = core.process_z_blending(
-            current_binary_image,
-            prior_white_combined_mask,
-            app_config,
-            image_data['classified_rois'],
-            debug_info=debug_info
-        )
-
-        output_image_from_core = core.merge_to_output(original_image, receding_gradient)
-        final_processed_image = xy_blend_processor.process_xy_pipeline(output_image_from_core, xy_blend_pipeline_ops)
-
-        output_filename = os.path.basename(filepath)
-        output_filepath = os.path.join(output_folder, output_filename)
-        cv2.imwrite(output_filepath, final_processed_image)
-        return output_filepath
-
-    def run(self):
-        """
-        The main processing loop.
-        Refactored for stateful ROI tracking: lightweight sequential processing in this
-        thread, heavyweight gradient calculation dispatched to worker threads.
-        """
-        self.status_update.emit("Processing started...")
-        
-        numeric_pattern = re.compile(r'(\d+)\.\w+$')
-        def get_numeric_part(filename):
-            match = numeric_pattern.search(filename)
-            return int(match.group(1)) if match else float('inf')
-
-        try:
-            input_path = ""
-            processing_output_path = ""
-
-            if self.app_config.input_mode == "uvtools":
-                input_path = self._run_uvtools_extraction()
-                processing_output_path = os.path.join(self.session_temp_folder, "Output")
-            else:
-                input_path = self.app_config.input_folder
-                processing_output_path = self.app_config.output_folder
-
-            all_image_filenames = sorted(
-                [f for f in os.listdir(input_path) if f.lower().endswith(('.png', '.bmp', '.tif', '.tiff'))],
-                key=get_numeric_part
-            )
-            
-            image_filenames_filtered = []
-            for f in all_image_filenames:
-                numeric_part = get_numeric_part(f)
-                if self.app_config.start_index is not None and numeric_part < self.app_config.start_index:
-                    continue
-                if self.app_config.stop_index is not None and numeric_part > self.app_config.stop_index:
-                    continue
-                image_filenames_filtered.append(f)
-
-            total_images = len(image_filenames_filtered)
-            if total_images == 0:
-                self.error_signal.emit("No images found in the specified folder or index range.")
-                return
-
-            prior_binary_masks_cache = collections.deque(maxlen=self.app_config.receding_layers)
-            tracker = ROITracker()
-            
-            with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                # A list to hold futures so we can check for exceptions
-                active_futures = []
-
-                for i, filename in enumerate(image_filenames_filtered):
-                    if not self._is_running:
-                        self.status_update.emit("Processing stopped by user.")
-                        break
-
-                    self.status_update.emit(f"Analyzing {filename} ({i + 1}/{total_images})")
-                    filepath = os.path.join(input_path, filename)
-
-                    binary_image, original_image = core.load_image(filepath)
-                    if binary_image is None:
-                        self.status_update.emit(f"Skipping unloadable image: {filename}")
-                        continue
-
-                    classified_rois = []
-                    if self.app_config.blending_mode == 'roi_fade':
-                        layer_index = get_numeric_part(filename)
-                        rois = core.identify_rois(binary_image, self.app_config.roi_params.min_size)
-                        classified_rois = tracker.update_and_classify(rois, layer_index, self.app_config)
-
-                    image_data_for_task = {
-                        'filepath': filepath,
-                        'binary_image': binary_image,
-                        'original_image': original_image,
-                        'classified_rois': classified_rois
-                    }
-
-                    future = executor.submit(
-                        ImageProcessorThread._process_single_image_task,
-                        image_data_for_task,
-                        collections.deque(prior_binary_masks_cache),
-                        self.app_config,
-                        self.app_config.xy_blend_pipeline,
-                        processing_output_path,
-                        self.app_config.debug_save
-                    )
-                    active_futures.append(future)
-
-                    prior_binary_masks_cache.append(binary_image)
-                
-                # Wait for all futures to complete and check for errors
-                processed_count = 0
-                for future in concurrent.futures.as_completed(active_futures):
-                    if not self._is_running: break
-                    try:
-                        future.result() # Raise exception if one occurred
-                        processed_count += 1
-                        self.status_update.emit(f"Completed processing images ({processed_count}/{total_images})")
-                        self.progress_update.emit(int((processed_count / total_images) * 100))
-                    except Exception as exc:
-                        import traceback
-                        error_detail = f"An image processing task failed: {exc}\n{traceback.format_exc()}"
-                        self.error_signal.emit(error_detail)
-                        self._is_running = False
-                        # Cancel remaining futures
-                        for f in active_futures:
-                            f.cancel()
-                        break
-            
-            self.status_update.emit("All image processing tasks completed.")
-
-            # --- UVTools Repack Step ---
-            if self.app_config.input_mode == "uvtools" and self._is_running:
-                uvtop_file = self._generate_uvtop_file(processing_output_path)
-                self._run_uvtools_repack(uvtop_file)
-
-        except Exception as e:
-            import traceback
-            error_info = f"Error in processing thread: {e}\n\n{traceback.format_exc()}"
-            self.error_signal.emit(error_info)
-        finally:
-            # --- Cleanup Step ---
-            if self.app_config.input_mode == "uvtools" and self.app_config.uvtools_delete_temp_on_completion:
-                if self.session_temp_folder and os.path.isdir(self.session_temp_folder):
-                    self.status_update.emit(f"Deleting temporary folder: {self.session_temp_folder}")
-                    try:
-                        shutil.rmtree(self.session_temp_folder)
-                        self.status_update.emit("Temporary files deleted.")
-                    except Exception as e:
-                        self.error_signal.emit(f"Could not delete temp folder: {e}")
-
-            if self._is_running:
-                self.status_update.emit("Processing complete!")
-            else:
-                self.status_update.emit("Processing stopped by user or error.")
-            self.finished_signal.emit()
-
-    def stop_processing(self):
-        self._is_running = False
+from processing_pipeline import ProcessingPipelineThread
 
 class ImageProcessorApp(QWidget):
     """The main application window, now with a restructured UI."""
@@ -422,13 +117,11 @@ class ImageProcessorApp(QWidget):
         self.uvtools_input_file_button = QPushButton("Browse...")
         uvtools_mode_layout.addWidget(self.uvtools_input_file_button, 2, 2)
         
-        # NEW: Horizontal Rule
         divider = QFrame()
         divider.setFrameShape(QFrame.HLine)
         divider.setFrameShadow(QFrame.Sunken)
         uvtools_mode_layout.addWidget(divider, 3, 0, 1, 3)
 
-        # NEW: Output Location Radios
         uvtools_mode_layout.addWidget(QLabel("Output Completed Slice file:"), 4, 0)
         self.uvtools_output_location_group = QButtonGroup(self)
         self.uvtools_output_working_radio = QRadioButton("To Working Folder")
@@ -455,7 +148,6 @@ class ImageProcessorApp(QWidget):
         blending_group = QGroupBox("Stack Blending")
         blending_layout = QVBoxLayout(blending_group)
 
-        # --- Blending Mode Selection ---
         blending_mode_layout = QHBoxLayout()
         blending_mode_layout.addWidget(QLabel("Blending Mode:"))
         self.blending_mode_group = QButtonGroup(self)
@@ -468,20 +160,17 @@ class ImageProcessorApp(QWidget):
         blending_mode_layout.addStretch(1)
         blending_layout.addLayout(blending_mode_layout)
 
-        # --- Common Blending Settings ---
         common_blending_layout = QGridLayout()
         common_blending_layout.addWidget(QLabel("Receding Look Down Layers:"), 0, 0)
         self.receding_layers_edit = QLineEdit("3")
         self.receding_layers_edit.setValidator(QIntValidator(0, 100, self))
         common_blending_layout.addWidget(self.receding_layers_edit, 0, 1)
-        common_blending_layout.setColumnStretch(2, 1) # Add stretch
+        common_blending_layout.setColumnStretch(2, 1)
         blending_layout.addLayout(common_blending_layout)
 
-        # --- Blending Settings Stacked Widget ---
         self.blending_stacked_widget = QStackedWidget()
         blending_layout.addWidget(self.blending_stacked_widget)
 
-        # --- Page 0: Fixed Fade Mode ---
         fixed_fade_widget = QWidget()
         fixed_fade_layout = QGridLayout(fixed_fade_widget)
         self.fixed_fade_receding_checkbox = QCheckBox("Use Fixed Fade Distance")
@@ -492,7 +181,6 @@ class ImageProcessorApp(QWidget):
         fixed_fade_layout.setColumnStretch(2, 1)
         self.blending_stacked_widget.addWidget(fixed_fade_widget)
 
-        # --- Page 1: ROI Fade Mode ---
         roi_fade_widget = QWidget()
         roi_fade_layout = QVBoxLayout(roi_fade_widget)
 
@@ -519,27 +207,21 @@ class ImageProcessorApp(QWidget):
         self.support_max_size_edit = QLineEdit("500")
         self.support_max_size_edit.setValidator(QIntValidator(0, 1000000))
         raft_support_layout.addWidget(self.support_max_size_edit, 1, 1)
-
         raft_support_layout.addWidget(QLabel("Max Support Layer:"), 1, 2)
         self.support_max_layer_edit = QLineEdit("1000")
         self.support_max_layer_edit.setValidator(QIntValidator(0, 100000))
         raft_support_layout.addWidget(self.support_max_layer_edit, 1, 3)
-
         raft_support_layout.addWidget(QLabel("Max Support Growth (%):"), 2, 0)
         self.support_max_growth_edit = QLineEdit("150.0")
         self.support_max_growth_edit.setValidator(QDoubleValidator(0.0, 10000.0, 1))
         raft_support_layout.addWidget(self.support_max_growth_edit, 2, 1)
-
         note_label = QLabel("<i>Note: Classified rafts/supports are ignored. Growth factor is used to reclassify supports as model.</i>")
         note_label.setWordWrap(True)
         raft_support_layout.addWidget(note_label, 3, 0, 1, 4)
-
         roi_fade_layout.addWidget(self.raft_support_group)
         roi_fade_layout.addStretch(1)
-
         self.blending_stacked_widget.addWidget(roi_fade_widget)
 
-        # --- Overhang (Common) ---
         overhang_layout = QGridLayout()
         overhang_layout.addWidget(QLabel("Overhang Look Up Layers: (Disabled / WiP)"), 0, 0)
         self.overhang_layers_edit = QLineEdit("0")
@@ -555,7 +237,6 @@ class ImageProcessorApp(QWidget):
 
         main_processing_layout.addWidget(blending_group)
         
-        # --- General Settings Section ---
         general_group = QGroupBox("General")
         general_layout = QVBoxLayout(general_group)
         
@@ -593,7 +274,7 @@ class ImageProcessorApp(QWidget):
         self.progress_bar = QProgressBar()
         main_layout.addWidget(self.progress_bar)
         self.status_label = QLabel("Status: Ready")
-        self.status_label.setWordWrap(True) # NEW: Enable word wrap
+        self.status_label.setWordWrap(True)
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(self.status_label)
 
@@ -785,7 +466,7 @@ class ImageProcessorApp(QWidget):
                     raise ValueError("Input Slice File is not valid.")
             
             self.set_ui_enabled(False)
-            self.processor_thread = ImageProcessorThread(app_config=config, max_workers=config.thread_count)
+            self.processor_thread = ProcessingPipelineThread(app_config=config, max_workers=config.thread_count)
             self.processor_thread.status_update.connect(self.update_status)
             self.processor_thread.progress_update.connect(self.progress_bar.setValue)
             self.processor_thread.error_signal.connect(self.show_error)
