@@ -172,21 +172,20 @@ class ImageProcessorApp(QWidget):
         self.receding_layers_edit = QLineEdit("3")
         self.receding_layers_edit.setValidator(QIntValidator(0, 100, self))
         common_blending_layout.addWidget(self.receding_layers_edit, 0, 1)
+
+        common_blending_layout.addWidget(QLabel("Fade Distance (pixels):"), 1, 0)
+        self.fade_dist_receding_edit = QLineEdit("10.0")
+        self.fade_dist_receding_edit.setValidator(QDoubleValidator(0.1, 1000.0, 2, self))
+        common_blending_layout.addWidget(self.fade_dist_receding_edit, 1, 1)
+
         common_blending_layout.setColumnStretch(2, 1)
         blending_layout.addLayout(common_blending_layout)
 
         self.blending_stacked_widget = QStackedWidget()
         blending_layout.addWidget(self.blending_stacked_widget)
 
-        # --- Fixed Fade Widget ---
+        # --- Fixed Fade Widget (now empty) ---
         fixed_fade_widget = QWidget()
-        fixed_fade_layout = QGridLayout(fixed_fade_widget)
-        self.fixed_fade_receding_checkbox = QCheckBox("Use Fixed Fade Distance")
-        fixed_fade_layout.addWidget(self.fixed_fade_receding_checkbox, 0, 0)
-        self.fade_dist_receding_edit = QLineEdit("10.0")
-        self.fade_dist_receding_edit.setValidator(QDoubleValidator(0.1, 1000.0, 2, self))
-        fixed_fade_layout.addWidget(self.fade_dist_receding_edit, 0, 1)
-        fixed_fade_layout.setColumnStretch(2, 1)
         self.blending_stacked_widget.addWidget(fixed_fade_widget)
 
         # --- ROI Fade Widget ---
@@ -421,7 +420,6 @@ class ImageProcessorApp(QWidget):
         self.uvtools_output_working_radio.setChecked(config.uvtools_output_location == "working_folder")
         self.uvtools_output_input_radio.setChecked(config.uvtools_output_location == "input_folder")
         self.receding_layers_edit.setText(str(config.receding_layers))
-        self.fixed_fade_receding_checkbox.setChecked(config.use_fixed_fade_receding)
         self.fade_dist_receding_edit.setText(str(config.fixed_fade_distance_receding))
 
         # --- Blending Mode Loading ---
@@ -521,7 +519,11 @@ class ImageProcessorApp(QWidget):
 
         try: config.receding_layers = int(self.receding_layers_edit.text())
         except ValueError: config.receding_layers = 3
-        config.use_fixed_fade_receding = self.fixed_fade_receding_checkbox.isChecked()
+
+        # The checkbox for use_fixed_fade_receding is removed, so we can consider it always true or remove it from config.
+        # For now, we just don't set it from the UI. The core logic will rely on the distance value.
+        config.use_fixed_fade_receding = True
+
         try: config.fixed_fade_distance_receding = float(self.fade_dist_receding_edit.text().replace(',', '.'))
         except ValueError: config.fixed_fade_distance_receding = 10.0
 

@@ -15,12 +15,22 @@ def extract_layers(uvtools_path: str, input_file: str, temp_folder: str) -> str:
 
     try:
         creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-        process = subprocess.run(command, capture_output=True, text=True, check=True, creationflags=creation_flags)
+        # Remove check=True to handle non-zero exit codes manually
+        process = subprocess.run(command, capture_output=True, text=True, creationflags=creation_flags)
+        # A return code of 1 is sometimes expected and not a fatal error.
         if process.returncode not in [0, 1]:
-            raise RuntimeError(f"UVTools exited with an error (code {process.returncode}):\n\n{process.stderr}")
+            error_message = f"UVTools exited with an unexpected error (code {process.returncode}):\n\n{process.stderr}"
+            raise RuntimeError(error_message)
         return input_folder
+    except subprocess.CalledProcessError as e:
+        # This block is now less likely to be hit, but good practice to keep
+        error_message = f"UVTools extraction failed. Command: '{' '.join(e.cmd)}'\n"
+        error_message += f"Return Code: {e.returncode}\n"
+        error_message += f"Stderr: {e.stderr}\n"
+        error_message += f"Stdout: {e.stdout}\n"
+        raise RuntimeError(error_message)
     except Exception as e:
-        raise RuntimeError(f"UVTools extraction failed: {e}")
+        raise RuntimeError(f"An unexpected error occurred during UVTools extraction: {e}")
 
 def generate_uvtop_file(processed_images_folder: str, temp_folder: str, run_timestamp: str) -> str:
     """Generates the .uvtop XML file for repacking."""
@@ -74,9 +84,17 @@ def repack_layers(uvtools_path: str, input_file: str, uvtop_filepath: str, outpu
 
     try:
         creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-        process = subprocess.run(command, capture_output=True, text=True, check=True, creationflags=creation_flags)
+        # Remove check=True to handle non-zero exit codes manually
+        process = subprocess.run(command, capture_output=True, text=True, creationflags=creation_flags)
         if process.returncode not in [0, 1]:
-            raise RuntimeError(f"UVTools exited with an error (code {process.returncode}):\n\n{process.stderr}")
+            error_message = f"UVTools exited with an unexpected error (code {process.returncode}):\n\n{process.stderr}"
+            raise RuntimeError(error_message)
         return final_output_path
+    except subprocess.CalledProcessError as e:
+        error_message = f"UVTools repacking failed. Command: '{' '.join(e.cmd)}'\n"
+        error_message += f"Return Code: {e.returncode}\n"
+        error_message += f"Stderr: {e.stderr}\n"
+        error_message += f"Stdout: {e.stdout}\n"
+        raise RuntimeError(error_message)
     except Exception as e:
-        raise RuntimeError(f"UVTools repacking failed: {e}")
+        raise RuntimeError(f"An unexpected error occurred during UVTools repacking: {e}")
