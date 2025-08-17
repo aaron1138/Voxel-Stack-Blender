@@ -241,12 +241,16 @@ def _calculate_weighted_receding_gradient_field(current_white_mask, prior_binary
     # Use a floating-point accumulator for the weighted sum
     weighted_accumulator = np.zeros(current_white_mask.shape, dtype=np.float32)
 
-    fixed_fade_distance = config.fixed_fade_distance_receding
-    denominator = fixed_fade_distance if fixed_fade_distance > 0 else 1.0
+    fade_distances = config.fade_distances_receding
+    default_fade_dist = config.fixed_fade_distance_receding
 
     for i, (prior_mask, weight) in enumerate(zip(prior_binary_masks, weights)):
         if weight <= 0:
             continue
+
+        # Get the specific fade distance for this layer, with a fallback
+        fade_dist = fade_distances[i] if i < len(fade_distances) else default_fade_dist
+        denominator = fade_dist if fade_dist > 0 else 1.0
 
         receding_white_areas = cv2.bitwise_and(prior_mask, cv2.bitwise_not(current_white_mask))
         if cv2.countNonZero(receding_white_areas) == 0:
@@ -258,7 +262,7 @@ def _calculate_weighted_receding_gradient_field(current_white_mask, prior_binary
         receding_distance_map = cv2.bitwise_and(distance_map, distance_map, mask=receding_white_areas)
 
         # Normalize so that 1.0 is close and 0.0 is far.
-        clipped_distance_map = np.clip(receding_distance_map, 0, fixed_fade_distance)
+        clipped_distance_map = np.clip(receding_distance_map, 0, fade_dist)
         normalized_map = 1.0 - (clipped_distance_map / denominator)
 
         # Add the weighted, normalized map to the accumulator

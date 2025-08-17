@@ -249,6 +249,12 @@ class ImageProcessorApp(QWidget):
         weighted_stack_layout.addWidget(manual_weights_group)
         self.manual_weight_editors = []
 
+        fade_distances_group = QGroupBox("Per-Layer Fade Distances (pixels)")
+        self.fade_distances_layout = QHBoxLayout(fade_distances_group)
+        self.fade_distances_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        weighted_stack_layout.addWidget(fade_distances_group)
+        self.fade_distance_editors = []
+
         weighted_stack_layout.addStretch(1)
         self.blending_stacked_widget.addWidget(weighted_stack_widget)
 
@@ -317,6 +323,7 @@ class ImageProcessorApp(QWidget):
         self.input_mode_group.idClicked.connect(self.on_input_mode_changed)
         self.blending_mode_group.buttonClicked.connect(self.on_blending_mode_changed)
         self.receding_layers_edit.textChanged.connect(self._update_manual_weight_editors)
+        self.receding_layers_edit.textChanged.connect(self._update_fade_distance_editors)
         self.falloff_type_combo.currentIndexChanged.connect(self._update_weights_from_falloff)
         self.save_config_button.clicked.connect(self._save_config_to_file)
         self.load_config_button.clicked.connect(self._load_config_from_file)
@@ -338,26 +345,39 @@ class ImageProcessorApp(QWidget):
         self.blending_stacked_widget.setCurrentIndex(stack_index)
 
     def _update_manual_weight_editors(self):
-        try:
-            num_layers = int(self.receding_layers_edit.text())
-        except (ValueError, TypeError):
-            num_layers = 0
+        self._update_dynamic_editors(
+            self.manual_weight_editors,
+            self.manual_weights_layout,
+            QIntValidator(0, 1000, self),
+            50
+        )
+        self._update_weights_from_falloff()
 
-        # Remove excess editors
-        while len(self.manual_weight_editors) > num_layers:
-            editor = self.manual_weight_editors.pop()
-            self.manual_weights_layout.removeWidget(editor)
+    def _update_fade_distance_editors(self):
+        self._update_dynamic_editors(
+            self.fade_distance_editors,
+            self.fade_distances_layout,
+            QDoubleValidator(0.1, 1000.0, 2, self),
+            60
+        )
+
+    def _update_dynamic_editors(self, editor_list, layout, validator, width):
+        try:
+            num_items = int(self.receding_layers_edit.text())
+        except (ValueError, TypeError):
+            num_items = 0
+
+        while len(editor_list) > num_items:
+            editor = editor_list.pop()
+            layout.removeWidget(editor)
             editor.deleteLater()
 
-        # Add needed editors
-        while len(self.manual_weight_editors) < num_layers:
+        while len(editor_list) < num_items:
             editor = QLineEdit()
-            editor.setValidator(QIntValidator(0, 1000, self))
-            editor.setFixedWidth(50)
-            self.manual_weights_layout.addWidget(editor)
-            self.manual_weight_editors.append(editor)
-
-        self._update_weights_from_falloff()
+            editor.setValidator(validator)
+            editor.setFixedWidth(width)
+            layout.addWidget(editor)
+            editor_list.append(editor)
 
     def _update_weights_from_falloff(self):
         try:
@@ -444,7 +464,8 @@ class ImageProcessorApp(QWidget):
         self.support_max_growth_edit.setText(f"{(config.roi_params.support_max_growth - 1.0) * 100.0:.1f}")
 
         # --- Weighted Stack Settings ---
-        self._update_manual_weight_editors() # Create correct number of editors first
+        self._update_manual_weight_editors()
+        self._update_fade_distance_editors()
 
         index = self.falloff_type_combo.findData(config.weighted_falloff_type)
         self.falloff_type_combo.setCurrentIndex(index if index >= 0 else 0)
@@ -454,7 +475,14 @@ class ImageProcessorApp(QWidget):
                 editor.setText(str(config.manual_weights[i]))
             else:
                 editor.setText("")
-        self._update_weights_from_falloff() # To set placeholder text
+        self._update_weights_from_falloff()
+
+        for i, editor in enumerate(self.fade_distance_editors):
+            if i < len(config.fade_distances_receding):
+                editor.setText(str(config.fade_distances_receding[i]))
+            else:
+                # Provide a default if the config list is shorter
+                editor.setText("10.0")
 
         # --- General Settings ---
         self.overhang_layers_edit.setText(str(config.overhang_layers))
@@ -528,6 +556,7 @@ class ImageProcessorApp(QWidget):
         except ValueError: config.fixed_fade_distance_receding = 10.0
 
         config.weighted_falloff_type = self.falloff_type_combo.currentData()
+
         manual_weights = []
         for editor in self.manual_weight_editors:
             text = editor.text()
@@ -543,6 +572,15 @@ class ImageProcessorApp(QWidget):
                 except (ValueError, TypeError):
                     manual_weights.append(0)
         config.manual_weights = manual_weights
+
+        fade_distances = []
+        for editor in self.fade_distance_editors:
+            text = editor.text().replace(',', '.')
+            try:
+                fade_distances.append(float(text))
+            except (ValueError, TypeError):
+                fade_distances.append(10.0) # Default value on error
+        config.fade_distances_receding = fade_distances
 
         try: config.thread_count = int(self.thread_count_edit.text())
         except ValueError: config.thread_count = DEFAULT_NUM_WORKERS

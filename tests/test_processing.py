@@ -20,11 +20,12 @@ def base_config():
 
 def test_weighted_blending_logic(base_config):
     """
-    Tests the core logic of the weighted stack blending.
+    Tests the core logic of the weighted stack blending with per-layer fade distances.
     """
     # 1. Setup
     cfg = base_config
     cfg.manual_weights = [100, 50]  # Higher weight for the first prior mask
+    cfg.fade_distances_receding = [20.0, 10.0] # Different fade distances per layer
 
     # Create image masks
     # current_mask is a 10x10 square in the middle
@@ -69,16 +70,20 @@ def test_weighted_blending_logic(base_config):
     print(f"Pixel values: A={val_a}, B={val_b}, C={val_c}")
 
     # Based on manual calculation with the corrected logic:
-    # val_a should be approx (1 - (3/20)*100 + (1-(3/20))*50)/150 * 255 = 216
-    # val_b should be approx (1 - (8/20)*100 + (1-(8/20))*50)/150 * 255 = 153 <- My test point was wrong, it is in both zones.
-    # Let's pick a new point B that is ONLY in the second zone.
-    point_b_new = (32, 50) # x=32 is outside mask 1 (edge at 40) but inside mask 2 (edge at 35)
+    # point_a (dist 3):
+    #   - Layer 1 (w:100, d:20): (1 - 3/20) * 100 = 85
+    #   - Layer 2 (w:50, d:10): (1 - 3/10) * 50 = 35
+    #   - Total accum = 120. Norm = 120/150 = 0.8. Final = 0.8*255 = 204
+    # point_b_new (dist 13 from edge, but only in layer 2's receding area):
+    #   - This point is outside the fade distance of layer 2 (10px), so its contribution should be 0.
+    #   - Thus, its final value should be 0.
+    point_b_new = (32, 50)
     val_b_new = gradient[point_b_new]
     print(f"New B value: {val_b_new}")
 
-    # For point_b_new, dist is 13. accum = (1-13/20)*50 = 17.5. norm = 17.5/150=0.116. final = 0.116*255=29
-
-    assert val_a > val_b_new, "Point influenced by two weights should be brighter than a point influenced by one, weaker weight"
+    assert val_a > 200, "Point A should be very bright"
+    assert val_b_new == 0, "Point B should be black as it's outside the fade distance of its layer"
+    assert val_a > val_b_new
     assert val_c == 0, "Point inside the current mask should have zero gradient"
     # Let's assert the general relationship, which is more robust than exact values.
     assert val_a > 150 # Should be bright

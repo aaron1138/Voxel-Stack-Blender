@@ -178,6 +178,7 @@ class Config:
     # --- Weighted Stack Mode Settings ---
     weighted_falloff_type: WeightingFalloff = WeightingFalloff.LINEAR
     manual_weights: List[int] = field(default_factory=lambda: [100, 75, 50, 25])
+    fade_distances_receding: List[float] = field(default_factory=lambda: [10.0, 10.0, 10.0, 10.0])
 
     # --- Overhang Settings (for future use) ---
     overhang_layers: int = 0
