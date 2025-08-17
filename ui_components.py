@@ -158,9 +158,9 @@ class ImageProcessorApp(QWidget):
         self.fixed_fade_mode_radio = QRadioButton("Fixed Fade")
         self.roi_fade_mode_radio = QRadioButton("ROI Fade")
         self.weighted_stack_mode_radio = QRadioButton("Weighted Stack")
-        self.blending_mode_group.addButton(self.fixed_fade_mode_radio, ProcessingMode.FIXED_FADE.value)
-        self.blending_mode_group.addButton(self.roi_fade_mode_radio, ProcessingMode.ROI_FADE.value)
-        self.blending_mode_group.addButton(self.weighted_stack_mode_radio, ProcessingMode.WEIGHTED_STACK.value)
+        self.blending_mode_group.addButton(self.fixed_fade_mode_radio, 0)
+        self.blending_mode_group.addButton(self.roi_fade_mode_radio, 1)
+        self.blending_mode_group.addButton(self.weighted_stack_mode_radio, 2)
         blending_mode_layout.addWidget(self.fixed_fade_mode_radio)
         blending_mode_layout.addWidget(self.roi_fade_mode_radio)
         blending_mode_layout.addWidget(self.weighted_stack_mode_radio)
@@ -334,13 +334,9 @@ class ImageProcessorApp(QWidget):
         self.io_stacked_widget.setCurrentIndex(stack_index)
 
     def on_blending_mode_changed(self, button):
-        mode_value = self.blending_mode_group.id(button)
-        if mode_value == ProcessingMode.FIXED_FADE.value:
-            self.blending_stacked_widget.setCurrentIndex(0)
-        elif mode_value == ProcessingMode.ROI_FADE.value:
-            self.blending_stacked_widget.setCurrentIndex(1)
-        elif mode_value == ProcessingMode.WEIGHTED_STACK.value:
-            self.blending_stacked_widget.setCurrentIndex(2)
+        # The ID now directly corresponds to the stack index
+        stack_index = self.blending_mode_group.id(button)
+        self.blending_stacked_widget.setCurrentIndex(stack_index)
 
     def _update_manual_weight_editors(self):
         try:
@@ -429,14 +425,16 @@ class ImageProcessorApp(QWidget):
         self.fade_dist_receding_edit.setText(str(config.fixed_fade_distance_receding))
 
         # --- Blending Mode Loading ---
-        blending_mode_map = {
-            ProcessingMode.FIXED_FADE: (self.fixed_fade_mode_radio, 0),
-            ProcessingMode.ROI_FADE: (self.roi_fade_mode_radio, 1),
-            ProcessingMode.WEIGHTED_STACK: (self.weighted_stack_mode_radio, 2)
+        blending_mode_to_id = {
+            ProcessingMode.FIXED_FADE: 0,
+            ProcessingMode.ROI_FADE: 1,
+            ProcessingMode.WEIGHTED_STACK: 2
         }
-        radio_to_check, stack_index = blending_mode_map.get(config.blending_mode, (self.fixed_fade_mode_radio, 0))
-        radio_to_check.setChecked(True)
-        self.blending_stacked_widget.setCurrentIndex(stack_index)
+        id_to_check = blending_mode_to_id.get(config.blending_mode, 0)
+        button_to_check = self.blending_mode_group.button(id_to_check)
+        if button_to_check:
+            button_to_check.setChecked(True)
+        self.blending_stacked_widget.setCurrentIndex(id_to_check)
 
         # --- ROI Settings ---
         self.roi_min_size_edit.setText(str(config.roi_params.min_size))
@@ -486,9 +484,13 @@ class ImageProcessorApp(QWidget):
         config.uvtools_delete_temp_on_completion = self.uvtools_cleanup_checkbox.isChecked()
         config.uvtools_output_location = "input_folder" if self.uvtools_output_input_radio.isChecked() else "working_folder"
 
-        selected_button = self.blending_mode_group.checkedButton()
-        mode_value = self.blending_mode_group.id(selected_button)
-        config.blending_mode = ProcessingMode(mode_value)
+        id_to_blending_mode = {
+            0: ProcessingMode.FIXED_FADE,
+            1: ProcessingMode.ROI_FADE,
+            2: ProcessingMode.WEIGHTED_STACK
+        }
+        checked_id = self.blending_mode_group.checkedId()
+        config.blending_mode = id_to_blending_mode.get(checked_id, ProcessingMode.FIXED_FADE)
 
         try:
             config.roi_params.min_size = int(self.roi_min_size_edit.text())
