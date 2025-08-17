@@ -19,11 +19,26 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 from dataclasses import dataclass, field, asdict, fields
 from typing import List, Optional, Union, Any
+from enum import Enum
 import json
 import os
 import copy
 
 DEFAULT_NUM_WORKERS = max(1, os.cpu_count() - 1)
+
+
+class ProcessingMode(Enum):
+    FIXED_FADE = "fixed_fade"
+    ROI_FADE = "roi_fade"
+    WEIGHTED_STACK = "weighted_stack"
+
+
+class WeightingFalloff(Enum):
+    FLAT = "Flat"
+    LINEAR = "Linear"
+    EXPONENTIAL = "Exponential"
+    LOGARITHMIC = "Logarithmic"
+    GAUSSIAN = "Gaussian"
 
 @dataclass
 class LutParameters:
@@ -155,11 +170,15 @@ class Config:
     uvtools_delete_temp_on_completion: bool = True
 
     # --- Stack Blending Settings ---
-    blending_mode: str = "fixed_fade"  # "fixed_fade" or "roi_fade"
-    receding_layers: int = 3
+    blending_mode: ProcessingMode = ProcessingMode.FIXED_FADE
+    receding_layers: int = 4
     use_fixed_fade_receding: bool = False
     fixed_fade_distance_receding: float = 10.0
     
+    # --- Weighted Stack Mode Settings ---
+    weighted_falloff_type: WeightingFalloff = WeightingFalloff.LINEAR
+    manual_weights: List[int] = field(default_factory=lambda: [100, 75, 50, 25])
+
     # --- Overhang Settings (for future use) ---
     overhang_layers: int = 0
     use_fixed_fade_overhang: bool = False
@@ -174,16 +193,37 @@ class Config:
     xy_blend_pipeline: List[XYBlendOperation] = field(default_factory=lambda: [XYBlendOperation("none")])
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        # Convert enums to their string values for JSON serialization
+        for key, value in d.items():
+            if isinstance(value, Enum):
+                d[key] = value.value
+        return d
 
     @classmethod
     def from_dict(cls, data: dict) -> "Config":
-        # (This robust loading method remains the same)
         config_instance = cls()
         field_map = {f.name: f for f in fields(cls)}
         for key, value in data.items():
             if key in field_map:
                 field_obj = field_map[key]
+
+                # Handle Enum conversions for backward compatibility and robustness
+                if key == 'blending_mode':
+                    try:
+                        setattr(config_instance, key, ProcessingMode(value))
+                    except ValueError:
+                        print(f"Warning: Invalid blending_mode '{value}'. Defaulting to FIXED_FADE.")
+                        setattr(config_instance, key, ProcessingMode.FIXED_FADE)
+                    continue
+                elif key == 'weighted_falloff_type':
+                    try:
+                        setattr(config_instance, key, WeightingFalloff(value))
+                    except ValueError:
+                        print(f"Warning: Invalid weighted_falloff_type '{value}'. Defaulting to LINEAR.")
+                        setattr(config_instance, key, WeightingFalloff.LINEAR)
+                    continue
+
                 if key == 'xy_blend_pipeline':
                     pipeline_list = []
                     if isinstance(value, list):

@@ -11,7 +11,7 @@ import shutil
 
 from PySide6.QtCore import QThread, Signal
 
-from config import Config, XYBlendOperation
+from config import Config, XYBlendOperation, ProcessingMode
 import processing_core as core
 import xy_blend_processor
 from roi_tracker import ROITracker
@@ -82,11 +82,18 @@ class ProcessingPipelineThread(QThread):
         filepath = image_data['filepath']
 
         debug_info = {'output_folder': output_folder, 'base_filename': os.path.splitext(os.path.basename(filepath))[0]} if debug_save else None
-        prior_white_combined_mask = core.find_prior_combined_white_mask(list(prior_binary_masks_snapshot))
+
+        # Prepare the prior mask data based on the blending mode
+        if app_config.blending_mode == ProcessingMode.WEIGHTED_STACK:
+            # For weighted mode, pass the list of individual prior masks
+            prior_masks_for_blending = list(prior_binary_masks_snapshot)
+        else:
+            # For other modes, pass the single combined mask
+            prior_masks_for_blending = core.find_prior_combined_white_mask(list(prior_binary_masks_snapshot))
 
         receding_gradient = core.process_z_blending(
             current_binary_image,
-            prior_white_combined_mask,
+            prior_masks_for_blending,
             app_config,
             image_data['classified_rois'],
             debug_info=debug_info
@@ -161,7 +168,7 @@ class ProcessingPipelineThread(QThread):
                         continue
 
                     classified_rois = []
-                    if self.app_config.blending_mode == 'roi_fade':
+                    if self.app_config.blending_mode == ProcessingMode.ROI_FADE:
                         layer_index = get_numeric_part(filename)
                         rois = core.identify_rois(binary_image, self.app_config.roi_params.min_size)
                         classified_rois = tracker.update_and_classify(rois, layer_index, self.app_config)
