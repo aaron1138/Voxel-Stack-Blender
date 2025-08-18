@@ -126,6 +126,7 @@ class ProcessingPipelineThread(QThread):
             if self.app_config.input_mode == "uvtools":
                 input_path = self._run_uvtools_extraction()
                 processing_output_path = os.path.join(self.session_temp_folder, "Output")
+                os.makedirs(processing_output_path, exist_ok=True)
             else:
                 input_path = self.app_config.input_folder
                 processing_output_path = self.app_config.output_folder
@@ -207,7 +208,7 @@ class ProcessingPipelineThread(QThread):
                     future = executor.submit(
                         self._process_single_image_task,
                         image_data_for_task,
-                        collections.deque(prior_binary_masks_cache),
+                        list(prior_binary_masks_cache),  # Pass an immutable list snapshot
                         self.app_config,
                         self.app_config.xy_blend_pipeline,
                         processing_output_path,
