@@ -208,7 +208,7 @@ class ProcessingPipelineThread(QThread):
                     future = executor.submit(
                         self._process_single_image_task,
                         image_data_for_task,
-                        list(prior_binary_masks_cache),  # Pass an immutable list snapshot
+                        list(reversed(prior_binary_masks_cache)),  # REVERSED: Pass newest-to-oldest
                         self.app_config,
                         self.app_config.xy_blend_pipeline,
                         processing_output_path,

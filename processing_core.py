@@ -256,10 +256,23 @@ def _calculate_weighted_receding_gradient_field(current_white_mask, prior_binary
         if cv2.countNonZero(receding_white_areas) == 0:
             continue
 
-        distance_transform_src = cv2.bitwise_not(current_white_mask)
+        # CORRECTED LOGIC: The distance should be calculated from the edge of the prior mask itself.
+        distance_transform_src = cv2.bitwise_not(prior_mask)
         distance_map = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5)
 
+        # The distance map should only have values in the receding area.
         receding_distance_map = cv2.bitwise_and(distance_map, distance_map, mask=receding_white_areas)
+
+        if debug_info:
+            # Save debug images for inspection
+            os.makedirs(os.path.join(debug_info['output_folder'], "debug_core"), exist_ok=True)
+            cv2.imwrite(os.path.join(debug_info['output_folder'], "debug_core", f"{debug_info['base_filename']}_layer{i}_01_receding_areas.png"), receding_white_areas)
+
+            dist_vis = cv2.normalize(distance_map, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+            cv2.imwrite(os.path.join(debug_info['output_folder'], "debug_core", f"{debug_info['base_filename']}_layer{i}_02_dist_map.png"), dist_vis)
+
+            receding_dist_vis = cv2.normalize(receding_distance_map, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+            cv2.imwrite(os.path.join(debug_info['output_folder'], "debug_core", f"{debug_info['base_filename']}_layer{i}_03_receding_dist_map.png"), receding_dist_vis)
 
         # Normalize so that 1.0 is close and 0.0 is far.
         clipped_distance_map = np.clip(receding_distance_map, 0, fade_dist)
