@@ -105,6 +105,7 @@ class ProcessingPipelineThread(QThread):
         output_filename = os.path.basename(filepath)
         output_filepath = os.path.join(output_folder, output_filename)
         cv2.imwrite(output_filepath, final_processed_image)
+        print(f"Successfully wrote output file: {output_filepath}") # Verification print
         return output_filepath
 
     def run(self):
@@ -152,12 +153,34 @@ class ProcessingPipelineThread(QThread):
             tracker = ROITracker()
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                active_futures = []
+                active_futures = set()
+                processed_count = 0
+                max_active_futures = self.max_workers * 2  # Keep a buffer of tasks
+
+                def process_completed_futures(completed_futures):
+                    nonlocal processed_count
+                    for future in completed_futures:
+                        try:
+                            future.result()
+                            processed_count += 1
+                            self.status_update.emit(f"Completed processing images ({processed_count}/{total_images})")
+                            self.progress_update.emit(int((processed_count / total_images) * 100))
+                        except Exception as exc:
+                            import traceback
+                            error_detail = f"An image processing task failed: {exc}\n{traceback.format_exc()}"
+                            self.error_signal.emit(error_detail)
+                            self.stop_processing()
+                        active_futures.remove(future)
 
                 for i, filename in enumerate(image_filenames_filtered):
                     if not self._is_running:
                         self.status_update.emit("Processing stopped by user.")
                         break
+
+                    if len(active_futures) >= max_active_futures:
+                        # Wait for at least one future to complete
+                        done, _ = concurrent.futures.wait(active_futures, return_when=concurrent.futures.FIRST_COMPLETED)
+                        process_completed_futures(done)
 
                     self.status_update.emit(f"Analyzing {filename} ({i + 1}/{total_images})")
                     filepath = os.path.join(input_path, filename)
@@ -165,6 +188,7 @@ class ProcessingPipelineThread(QThread):
                     binary_image, original_image = core.load_image(filepath)
                     if binary_image is None:
                         self.status_update.emit(f"Skipping unloadable image: {filename}")
+                        total_images -= 1 # Adjust total for progress calculation
                         continue
 
                     classified_rois = []
@@ -189,26 +213,13 @@ class ProcessingPipelineThread(QThread):
                         processing_output_path,
                         self.app_config.debug_save
                     )
-                    active_futures.append(future)
+                    active_futures.add(future)
 
                     prior_binary_masks_cache.append(binary_image)
 
-                processed_count = 0
-                for future in concurrent.futures.as_completed(active_futures):
-                    if not self._is_running: break
-                    try:
-                        future.result()
-                        processed_count += 1
-                        self.status_update.emit(f"Completed processing images ({processed_count}/{total_images})")
-                        self.progress_update.emit(int((processed_count / total_images) * 100))
-                    except Exception as exc:
-                        import traceback
-                        error_detail = f"An image processing task failed: {exc}\n{traceback.format_exc()}"
-                        self.error_signal.emit(error_detail)
-                        self._is_running = False
-                        for f in active_futures:
-                            f.cancel()
-                        break
+                # Wait for all remaining futures to complete
+                if self._is_running and active_futures:
+                    process_completed_futures(concurrent.futures.as_completed(active_futures))
 
             self.status_update.emit("All image processing tasks completed.")
 
