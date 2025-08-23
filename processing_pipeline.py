@@ -84,8 +84,8 @@ class ProcessingPipelineThread(QThread):
         debug_info = {'output_folder': output_folder, 'base_filename': os.path.splitext(os.path.basename(filepath))[0]} if debug_save else None
 
         # Prepare the prior mask data based on the blending mode
-        if app_config.blending_mode == ProcessingMode.WEIGHTED_STACK:
-            # For weighted mode, pass the list of individual prior masks
+        if app_config.blending_mode in [ProcessingMode.WEIGHTED_STACK, ProcessingMode.ORTHOGONAL_1D_GRADIENT]:
+            # For these modes, pass the list of individual prior masks
             prior_masks_for_blending = list(prior_binary_masks_snapshot)
         else:
             # For other modes, pass the single combined mask

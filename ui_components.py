@@ -158,12 +158,15 @@ class ImageProcessorApp(QWidget):
         self.fixed_fade_mode_radio = QRadioButton("Fixed Fade")
         self.roi_fade_mode_radio = QRadioButton("ROI Fade")
         self.weighted_stack_mode_radio = QRadioButton("Weighted Stack")
+        self.ortho_1d_mode_radio = QRadioButton("Orthogonal 1D Gradient")
         self.blending_mode_group.addButton(self.fixed_fade_mode_radio, 0)
         self.blending_mode_group.addButton(self.roi_fade_mode_radio, 1)
         self.blending_mode_group.addButton(self.weighted_stack_mode_radio, 2)
+        self.blending_mode_group.addButton(self.ortho_1d_mode_radio, 3)
         blending_mode_layout.addWidget(self.fixed_fade_mode_radio)
         blending_mode_layout.addWidget(self.roi_fade_mode_radio)
         blending_mode_layout.addWidget(self.weighted_stack_mode_radio)
+        blending_mode_layout.addWidget(self.ortho_1d_mode_radio)
         blending_mode_layout.addStretch(1)
         blending_layout.addLayout(blending_mode_layout)
 
@@ -257,6 +260,10 @@ class ImageProcessorApp(QWidget):
 
         weighted_stack_layout.addStretch(1)
         self.blending_stacked_widget.addWidget(weighted_stack_widget)
+
+        # --- Orthogonal 1D Gradient Widget (no params yet) ---
+        ortho_1d_widget = QWidget()
+        self.blending_stacked_widget.addWidget(ortho_1d_widget)
 
         overhang_layout = QGridLayout()
         overhang_layout.addWidget(QLabel("Overhang Look Up Layers: (Disabled / WiP)"), 0, 0)
@@ -446,7 +453,8 @@ class ImageProcessorApp(QWidget):
         blending_mode_to_id = {
             ProcessingMode.FIXED_FADE: 0,
             ProcessingMode.ROI_FADE: 1,
-            ProcessingMode.WEIGHTED_STACK: 2
+            ProcessingMode.WEIGHTED_STACK: 2,
+            ProcessingMode.ORTHOGONAL_1D_GRADIENT: 3
         }
         id_to_check = blending_mode_to_id.get(config.blending_mode, 0)
         button_to_check = self.blending_mode_group.button(id_to_check)
@@ -513,7 +521,8 @@ class ImageProcessorApp(QWidget):
         id_to_blending_mode = {
             0: ProcessingMode.FIXED_FADE,
             1: ProcessingMode.ROI_FADE,
-            2: ProcessingMode.WEIGHTED_STACK
+            2: ProcessingMode.WEIGHTED_STACK,
+            3: ProcessingMode.ORTHOGONAL_1D_GRADIENT
         }
         checked_id = self.blending_mode_group.checkedId()
         config.blending_mode = id_to_blending_mode.get(checked_id, ProcessingMode.FIXED_FADE)

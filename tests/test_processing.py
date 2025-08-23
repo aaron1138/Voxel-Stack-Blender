@@ -8,7 +8,8 @@ import pytest
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from config import Config, ProcessingMode
-from processing_core import _calculate_weighted_receding_gradient_field
+from processing_core import _calculate_weighted_receding_gradient_field, _calculate_receding_gradient_field_orthogonal_1d
+import gradient_table_manager
 
 @pytest.fixture
 def base_config():
@@ -84,3 +85,66 @@ def test_empty_inputs(base_config):
     prior_mask = np.ones_like(current_mask) * 255
     gradient_no_weights = _calculate_weighted_receding_gradient_field(current_mask, [prior_mask], base_config)
     assert np.sum(gradient_no_weights) == 0
+
+def test_orthogonal_1d_gradient(base_config):
+    """
+    Tests the orthogonal 1D gradient logic with a simple case.
+    """
+    # 1. Setup
+    cfg = base_config
+    cfg.blending_mode = ProcessingMode.ORTHOGONAL_1D_GRADIENT
+
+    # Create a 10px wide receding border around a central square
+    current_mask = np.zeros((100, 100), dtype=np.uint8)
+    cv2.rectangle(current_mask, (40, 40), (60, 60), 255, -1)
+
+    prior_mask = np.zeros_like(current_mask)
+    cv2.rectangle(prior_mask, (30, 30), (70, 70), 255, -1)
+
+    prior_masks_for_func = [prior_mask]
+
+    # 2. Execution
+    gradient = _calculate_receding_gradient_field_orthogonal_1d(current_mask, prior_masks_for_func, cfg)
+
+    # 3. Assertions
+    # Get the expected gradient ramp for a 10-pixel distance
+    grad_table = gradient_table_manager.generate_linear_table()
+    ramp_10px = grad_table[10]
+
+    # Point on the left receding edge, right next to the source feature
+    # Expected value should be the highest in the ramp
+    point_left_near = (50, 39)
+    val_left_near = gradient[point_left_near]
+    assert val_left_near == ramp_10px[0]
+
+    # Point on the left receding edge, furthest from the source feature
+    # Expected value should be the lowest in the ramp
+    point_left_far = (50, 30)
+    val_left_far = gradient[point_left_far]
+    assert val_left_far == ramp_10px[9]
+
+    # Point on the top receding edge, right next to the source feature
+    point_top_near = (39, 50)
+    val_top_near = gradient[point_top_near]
+    assert val_top_near == ramp_10px[0]
+
+    # Point on the top receding edge, furthest from the source feature
+    point_top_far = (30, 50)
+    val_top_far = gradient[point_top_far]
+    assert val_top_far == ramp_10px[9]
+
+    # Point in a corner. Should be the max of the horizontal and vertical gradients.
+    # At (39, 39), the horizontal and vertical ramps both want to place ramp_10px[0].
+    point_corner = (39, 39)
+    val_corner = gradient[point_corner]
+    assert val_corner == ramp_10px[0]
+
+    # Point inside the original shape should be zero
+    point_inside = (50, 50)
+    val_inside = gradient[point_inside]
+    assert val_inside == 0
+
+    # Point outside all masks should be zero
+    point_outside = (10, 10)
+    val_outside = gradient[point_outside]
+    assert val_outside == 0

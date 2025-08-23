@@ -22,6 +22,8 @@ import numpy as np
 import os
 
 from config import ProcessingMode
+import gradient_table_manager
+from scipy.ndimage import label, find_objects
 
 def load_image(filepath):
     """
@@ -279,6 +281,112 @@ def _calculate_weighted_receding_gradient_field(current_white_mask, prior_binary
     return final_gradient_map
 
 
+def _calculate_receding_gradient_field_orthogonal_1d(current_white_mask, prior_binary_masks, config, debug_info=None):
+    """
+    Calculates a gradient field by identifying contiguous receding segments in X and Y
+    and applying a 1D gradient ramp across them.
+    """
+    if not prior_binary_masks:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    # 1. Prepare prerequisites
+    gradient_table = gradient_table_manager.generate_linear_table()
+    max_dist = len(gradient_table) - 1
+
+    prior_white_combined_mask = find_prior_combined_white_mask(prior_binary_masks)
+    if prior_white_combined_mask is None:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    receding_white_areas = cv2.bitwise_and(prior_white_combined_mask, cv2.bitwise_not(current_white_mask))
+    if cv2.countNonZero(receding_white_areas) == 0:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    h, w = current_white_mask.shape
+    horizontal_gradient_map = np.zeros((h, w), dtype=np.uint8)
+    vertical_gradient_map = np.zeros((h, w), dtype=np.uint8)
+
+    # Invert mask for labeling (label features, not background)
+    source_mask_inv = cv2.bitwise_not(current_white_mask)
+
+    # 2. Horizontal Pass (XZ plane)
+    for r in range(h):
+        # Find contiguous segments of receding pixels in this row
+        labeled_row, num_features = label(receding_white_areas[r, :])
+        if num_features == 0:
+            continue
+
+        slices = find_objects(labeled_row)
+        for s in slices:
+            segment_slice = s[0]
+            start_x, stop_x = segment_slice.start, segment_slice.stop
+            length = stop_x - start_x
+
+            if 0 < length <= max_dist:
+                gradient_ramp = gradient_table[length]
+
+                # Determine direction: is the source feature to the left or right?
+                # Check pixel immediately to the left of the segment
+                is_source_on_left = start_x > 0 and source_mask_inv[r, start_x - 1] == 0
+                # Check pixel immediately to the right of the segment
+                is_source_on_right = stop_x < w and source_mask_inv[r, stop_x] == 0
+
+                if is_source_on_left and not is_source_on_right:
+                    # Fade from left to right (high to low)
+                    horizontal_gradient_map[r, start_x:stop_x] = gradient_ramp
+                elif is_source_on_right and not is_source_on_left:
+                    # Fade from right to left (low to high)
+                    horizontal_gradient_map[r, start_x:stop_x] = gradient_ramp[::-1]
+                else:
+                    # If source is on both sides (a gap) or neither (isolated),
+                    # split the gradient. A simple approach is to fade from both ends to the middle.
+                    mid = length // 2
+                    horizontal_gradient_map[r, start_x : start_x + mid] = gradient_ramp[:mid]
+                    horizontal_gradient_map[r, start_x + mid : stop_x] = gradient_ramp[mid:][::-1]
+
+
+    # 3. Vertical Pass (YZ plane)
+    for c in range(w):
+        labeled_col, num_features = label(receding_white_areas[:, c])
+        if num_features == 0:
+            continue
+
+        slices = find_objects(labeled_col)
+        for s in slices:
+            segment_slice = s[0]
+            start_y, stop_y = segment_slice.start, segment_slice.stop
+            length = stop_y - start_y
+
+            if 0 < length <= max_dist:
+                gradient_ramp = gradient_table[length]
+
+                is_source_above = start_y > 0 and source_mask_inv[start_y - 1, c] == 0
+                is_source_below = stop_y < h and source_mask_inv[stop_y, c] == 0
+
+                if is_source_above and not is_source_below:
+                    vertical_gradient_map[start_y:stop_y, c] = gradient_ramp
+                elif is_source_below and not is_source_above:
+                    vertical_gradient_map[start_y:stop_y, c] = gradient_ramp[::-1]
+                else:
+                    mid = length // 2
+                    vertical_gradient_map[start_y : start_y + mid, c] = gradient_ramp[:mid]
+                    vertical_gradient_map[start_y + mid : stop_y, c] = gradient_ramp[mid:][::-1]
+
+    # 4. Combine Gradients
+    # Use the brighter of the two gradients for each pixel
+    final_gradient = np.maximum(horizontal_gradient_map, vertical_gradient_map)
+
+    # 5. Final Masking
+    final_gradient = cv2.bitwise_and(final_gradient, final_gradient, mask=receding_white_areas)
+
+    if debug_info:
+        cv2.imwrite(os.path.join(debug_info['output_folder'], f"{debug_info['base_filename']}_debug_ortho_receding.png"), receding_white_areas)
+        cv2.imwrite(os.path.join(debug_info['output_folder'], f"{debug_info['base_filename']}_debug_ortho_horizontal.png"), horizontal_gradient_map)
+        cv2.imwrite(os.path.join(debug_info['output_folder'], f"{debug_info['base_filename']}_debug_ortho_vertical.png"), vertical_gradient_map)
+        cv2.imwrite(os.path.join(debug_info['output_folder'], f"{debug_info['base_filename']}_debug_ortho_final.png"), final_gradient)
+
+    return final_gradient
+
+
 def process_z_blending(current_white_mask, prior_masks, config, classified_rois, debug_info=None):
     """
     Main entry point for Z-axis blending. Dispatches to the correct blending mode.
@@ -294,6 +402,13 @@ def process_z_blending(current_white_mask, prior_masks, config, classified_rois,
         )
     elif config.blending_mode == ProcessingMode.WEIGHTED_STACK:
         return _calculate_weighted_receding_gradient_field(
+            current_white_mask,
+            prior_masks, # Expects a list of masks
+            config,
+            debug_info
+        )
+    elif config.blending_mode == ProcessingMode.ORTHOGONAL_1D_GRADIENT:
+        return _calculate_receding_gradient_field_orthogonal_1d(
             current_white_mask,
             prior_masks, # Expects a list of masks
             config,

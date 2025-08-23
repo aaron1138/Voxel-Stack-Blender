@@ -31,6 +31,7 @@ class ProcessingMode(Enum):
     FIXED_FADE = "fixed_fade"
     ROI_FADE = "roi_fade"
     WEIGHTED_STACK = "weighted_stack"
+    ORTHOGONAL_1D_GRADIENT = "orthogonal_1d_gradient"
 
 
 class WeightingFalloff(Enum):
@@ -150,6 +151,19 @@ class RoiParameters:
 
 
 @dataclass
+class OrthogonalGradientParameters:
+    """
+    Parameters for Orthogonal 1D Gradient processing.
+    """
+    gradient_table_type: str = "linear"
+    # Future parameters like table size can go here
+
+    def __post_init__(self):
+        if self.gradient_table_type not in ["linear"]:
+            self.gradient_table_type = "linear"
+
+
+@dataclass
 class Config:
     """
     Main application configuration, updated with new UI fields.
@@ -187,6 +201,9 @@ class Config:
 
     # --- ROI Mode Settings ---
     roi_params: RoiParameters = field(default_factory=RoiParameters)
+
+    # --- Orthogonal 1D Gradient Mode Settings ---
+    orthogonal_params: OrthogonalGradientParameters = field(default_factory=OrthogonalGradientParameters)
 
     # --- General Settings ---
     thread_count: int = DEFAULT_NUM_WORKERS
@@ -241,6 +258,11 @@ class Config:
                         roi_field_names = {f.name for f in fields(RoiParameters)}
                         filtered_roi_data = {k: v for k, v in value.items() if k in roi_field_names}
                         setattr(config_instance, key, RoiParameters(**filtered_roi_data))
+                elif key == 'orthogonal_params':
+                    if isinstance(value, dict):
+                        ortho_field_names = {f.name for f in fields(OrthogonalGradientParameters)}
+                        filtered_ortho_data = {k: v for k, v in value.items() if k in ortho_field_names}
+                        setattr(config_instance, key, OrthogonalGradientParameters(**filtered_ortho_data))
                 else:
                     if field_obj.type is bool and isinstance(value, str):
                         value = value.lower() in ('true', '1', 't', 'y')
