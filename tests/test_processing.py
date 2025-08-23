@@ -8,8 +8,7 @@ import pytest
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from config import Config, ProcessingMode
-from processing_core import _calculate_weighted_receding_gradient_field, _calculate_receding_gradient_field_orthogonal_1d
-import gradient_table_manager
+from processing_core import _calculate_weighted_receding_gradient_field, _calculate_receding_gradient_field_enhanced_edt
 
 @pytest.fixture
 def base_config():
@@ -86,65 +85,50 @@ def test_empty_inputs(base_config):
     gradient_no_weights = _calculate_weighted_receding_gradient_field(current_mask, [prior_mask], base_config)
     assert np.sum(gradient_no_weights) == 0
 
-def test_orthogonal_1d_gradient(base_config):
+def test_enhanced_edt_adaptive_normalization(base_config):
     """
-    Tests the orthogonal 1D gradient logic with a simple case.
+    Tests that the Enhanced EDT mode normalizes disconnected regions independently.
     """
     # 1. Setup
     cfg = base_config
-    cfg.blending_mode = ProcessingMode.ORTHOGONAL_1D_GRADIENT
+    cfg.blending_mode = ProcessingMode.ENHANCED_EDT
+    cfg.use_fixed_fade_receding = False # Ensure adaptive mode is on
 
-    # Create a 10px wide receding border around a central square
     current_mask = np.zeros((100, 100), dtype=np.uint8)
-    cv2.rectangle(current_mask, (40, 40), (60, 60), 255, -1)
+    cv2.rectangle(current_mask, (45, 45), (55, 55), 255, -1)
 
+    # Create two disconnected prior masks, one creating a small receding area, one large
     prior_mask = np.zeros_like(current_mask)
-    cv2.rectangle(prior_mask, (30, 30), (70, 70), 255, -1)
+    # Large area on the left (20px wide)
+    cv2.rectangle(prior_mask, (25, 40), (45, 60), 255, -1)
+    # Small area on the right (5px wide)
+    cv2.rectangle(prior_mask, (55, 40), (60, 60), 255, -1)
 
     prior_masks_for_func = [prior_mask]
 
     # 2. Execution
-    gradient = _calculate_receding_gradient_field_orthogonal_1d(current_mask, prior_masks_for_func, cfg)
+    gradient = _calculate_receding_gradient_field_enhanced_edt(current_mask, prior_masks_for_func, cfg)
 
     # 3. Assertions
-    # Get the expected gradient ramp for a 10-pixel distance
-    grad_table = gradient_table_manager.generate_linear_table()
-    ramp_10px = grad_table[10]
+    # The max distance in the large region is ~20.6. The max in the small region is ~7.07.
+    # These values are used for normalization.
 
-    # Point on the left receding edge, right next to the source feature
-    # Expected value should be the highest in the ramp
-    point_left_near = (50, 39)
-    val_left_near = gradient[point_left_near]
-    assert val_left_near == ramp_10px[0]
+    # Point in the middle of the large gap (dist=10). Expected: (1 - 10/20.6)*255 = 131
+    point_large_gap = (50, 35)
+    val_large_gap = gradient[point_large_gap]
+    assert 130 < val_large_gap < 135
 
-    # Point on the left receding edge, furthest from the source feature
-    # Expected value should be the lowest in the ramp
-    point_left_far = (50, 30)
-    val_left_far = gradient[point_left_far]
-    assert val_left_far == ramp_10px[9]
+    # Point in the middle of the small gap (dist=2). Expected: (1 - 2/7.07)*255 = 182
+    point_small_gap = (50, 57)
+    val_small_gap = gradient[point_small_gap]
+    assert 180 < val_small_gap < 185
 
-    # Point on the top receding edge, right next to the source feature
-    point_top_near = (39, 50)
-    val_top_near = gradient[point_top_near]
-    assert val_top_near == ramp_10px[0]
+    # Point at the far edge of the large gap (dist=20). Expected: (1 - 20/20.6)*255 = 7
+    point_large_far = (50, 25)
+    val_large_far = gradient[point_large_far]
+    assert 5 < val_large_far < 15
 
-    # Point on the top receding edge, furthest from the source feature
-    point_top_far = (30, 50)
-    val_top_far = gradient[point_top_far]
-    assert val_top_far == ramp_10px[9]
-
-    # Point in a corner. Should be the max of the horizontal and vertical gradients.
-    # At (39, 39), the horizontal and vertical ramps both want to place ramp_10px[0].
-    point_corner = (39, 39)
-    val_corner = gradient[point_corner]
-    assert val_corner == ramp_10px[0]
-
-    # Point inside the original shape should be zero
-    point_inside = (50, 50)
-    val_inside = gradient[point_inside]
-    assert val_inside == 0
-
-    # Point outside all masks should be zero
-    point_outside = (10, 10)
-    val_outside = gradient[point_outside]
-    assert val_outside == 0
+    # Point at the far edge of the small gap (dist=4). Expected: (1 - 4/7.07)*255 = 110
+    point_small_far = (50, 59)
+    val_small_far = gradient[point_small_far]
+    assert 108 < val_small_far < 112

@@ -22,8 +22,6 @@ import numpy as np
 import os
 
 from config import ProcessingMode
-import gradient_table_manager
-from scipy.ndimage import label, find_objects
 
 def load_image(filepath):
     """
@@ -281,110 +279,64 @@ def _calculate_weighted_receding_gradient_field(current_white_mask, prior_binary
     return final_gradient_map
 
 
-def _calculate_receding_gradient_field_orthogonal_1d(current_white_mask, prior_binary_masks, config, debug_info=None):
+def _calculate_receding_gradient_field_enhanced_edt(current_white_mask, prior_binary_masks, config, debug_info=None):
     """
-    Calculates a gradient field by identifying contiguous receding segments in X and Y
-    and applying a 1D gradient ramp across them.
+    Calculates a gradient field using an enhanced Euclidean Distance Transform (EDT)
+    with adaptive normalization for each disconnected receding area.
     """
     if not prior_binary_masks:
         return np.zeros_like(current_white_mask, dtype=np.uint8)
-
-    # 1. Prepare prerequisites
-    gradient_table = gradient_table_manager.generate_linear_table()
-    max_dist = len(gradient_table) - 1
 
     prior_white_combined_mask = find_prior_combined_white_mask(prior_binary_masks)
     if prior_white_combined_mask is None:
         return np.zeros_like(current_white_mask, dtype=np.uint8)
 
+    # 1. Identify all receding white areas
     receding_white_areas = cv2.bitwise_and(prior_white_combined_mask, cv2.bitwise_not(current_white_mask))
     if cv2.countNonZero(receding_white_areas) == 0:
         return np.zeros_like(current_white_mask, dtype=np.uint8)
 
-    h, w = current_white_mask.shape
-    horizontal_gradient_map = np.zeros((h, w), dtype=np.uint8)
-    vertical_gradient_map = np.zeros((h, w), dtype=np.uint8)
+    # 2. Calculate a single global distance transform from the current layer's features
+    distance_transform_src = cv2.bitwise_not(current_white_mask)
+    distance_map = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5)
 
-    # Invert mask for labeling (label features, not background)
-    source_mask_inv = cv2.bitwise_not(current_white_mask)
+    # 3. Mask the distance map to only include receding areas
+    receding_distance_map = cv2.bitwise_and(distance_map, distance_map, mask=receding_white_areas)
 
-    # 2. Horizontal Pass (XZ plane)
-    for r in range(h):
-        # Find contiguous segments of receding pixels in this row
-        labeled_row, num_features = label(receding_white_areas[r, :])
-        if num_features == 0:
-            continue
+    # 4. Find each disconnected receding area to normalize it independently
+    num_labels, labels = cv2.connectedComponents(receding_white_areas)
 
-        slices = find_objects(labeled_row)
-        for s in slices:
-            segment_slice = s[0]
-            start_x, stop_x = segment_slice.start, segment_slice.stop
-            length = stop_x - start_x
+    final_gradient_map = np.zeros_like(current_white_mask, dtype=np.uint8)
 
-            if 0 < length <= max_dist:
-                gradient_ramp = gradient_table[length]
+    # 5. Iterate through each labeled region
+    for i in range(1, num_labels): # Start from 1 to skip the background
+        region_mask = (labels == i)
 
-                # Determine direction: is the source feature to the left or right?
-                # Check pixel immediately to the left of the segment
-                is_source_on_left = start_x > 0 and source_mask_inv[r, start_x - 1] == 0
-                # Check pixel immediately to the right of the segment
-                is_source_on_right = stop_x < w and source_mask_inv[r, stop_x] == 0
+        # Note: minMaxLoc requires an 8-bit mask
+        min_val, max_val, _, _ = cv2.minMaxLoc(receding_distance_map, mask=region_mask.astype(np.uint8))
 
-                if is_source_on_left and not is_source_on_right:
-                    # Fade from left to right (high to low)
-                    horizontal_gradient_map[r, start_x:stop_x] = gradient_ramp
-                elif is_source_on_right and not is_source_on_left:
-                    # Fade from right to left (low to high)
-                    horizontal_gradient_map[r, start_x:stop_x] = gradient_ramp[::-1]
-                else:
-                    # If source is on both sides (a gap) or neither (isolated),
-                    # split the gradient. A simple approach is to fade from both ends to the middle.
-                    mid = length // 2
-                    horizontal_gradient_map[r, start_x : start_x + mid] = gradient_ramp[:mid]
-                    horizontal_gradient_map[r, start_x + mid : stop_x] = gradient_ramp[mid:][::-1]
+        if max_val > 0:
+            use_fixed_normalization = config.use_fixed_fade_receding
+            fade_distance = config.fixed_fade_distance_receding
+            denominator = fade_distance if use_fixed_normalization else max_val
+            if denominator <= 0: denominator = 1.0
 
+            # Create a map of just this region's distances to avoid affecting other areas
+            region_dist_map = np.zeros_like(receding_distance_map, dtype=np.float32)
+            np.copyto(region_dist_map, receding_distance_map, where=region_mask)
 
-    # 3. Vertical Pass (YZ plane)
-    for c in range(w):
-        labeled_col, num_features = label(receding_white_areas[:, c])
-        if num_features == 0:
-            continue
+            # Normalize the distances for this region
+            clipped_map = np.clip(region_dist_map, 0, denominator)
+            normalized_map = clipped_map / denominator
 
-        slices = find_objects(labeled_col)
-        for s in slices:
-            segment_slice = s[0]
-            start_y, stop_y = segment_slice.start, segment_slice.stop
-            length = stop_y - start_y
+            # Invert and scale to 0-255
+            inverted_map = np.where(region_mask, 1.0 - normalized_map, 0)
+            region_gradient = (255 * inverted_map).astype(np.uint8)
 
-            if 0 < length <= max_dist:
-                gradient_ramp = gradient_table[length]
+            # Add the processed region to the final map
+            final_gradient_map = cv2.add(final_gradient_map, region_gradient)
 
-                is_source_above = start_y > 0 and source_mask_inv[start_y - 1, c] == 0
-                is_source_below = stop_y < h and source_mask_inv[stop_y, c] == 0
-
-                if is_source_above and not is_source_below:
-                    vertical_gradient_map[start_y:stop_y, c] = gradient_ramp
-                elif is_source_below and not is_source_above:
-                    vertical_gradient_map[start_y:stop_y, c] = gradient_ramp[::-1]
-                else:
-                    mid = length // 2
-                    vertical_gradient_map[start_y : start_y + mid, c] = gradient_ramp[:mid]
-                    vertical_gradient_map[start_y + mid : stop_y, c] = gradient_ramp[mid:][::-1]
-
-    # 4. Combine Gradients
-    # Use the brighter of the two gradients for each pixel
-    final_gradient = np.maximum(horizontal_gradient_map, vertical_gradient_map)
-
-    # 5. Final Masking
-    final_gradient = cv2.bitwise_and(final_gradient, final_gradient, mask=receding_white_areas)
-
-    if debug_info:
-        cv2.imwrite(os.path.join(debug_info['output_folder'], f"{debug_info['base_filename']}_debug_ortho_receding.png"), receding_white_areas)
-        cv2.imwrite(os.path.join(debug_info['output_folder'], f"{debug_info['base_filename']}_debug_ortho_horizontal.png"), horizontal_gradient_map)
-        cv2.imwrite(os.path.join(debug_info['output_folder'], f"{debug_info['base_filename']}_debug_ortho_vertical.png"), vertical_gradient_map)
-        cv2.imwrite(os.path.join(debug_info['output_folder'], f"{debug_info['base_filename']}_debug_ortho_final.png"), final_gradient)
-
-    return final_gradient
+    return final_gradient_map
 
 
 def process_z_blending(current_white_mask, prior_masks, config, classified_rois, debug_info=None):
@@ -407,8 +359,8 @@ def process_z_blending(current_white_mask, prior_masks, config, classified_rois,
             config,
             debug_info
         )
-    elif config.blending_mode == ProcessingMode.ORTHOGONAL_1D_GRADIENT:
-        return _calculate_receding_gradient_field_orthogonal_1d(
+    elif config.blending_mode == ProcessingMode.ENHANCED_EDT:
+        return _calculate_receding_gradient_field_enhanced_edt(
             current_white_mask,
             prior_masks, # Expects a list of masks
             config,
