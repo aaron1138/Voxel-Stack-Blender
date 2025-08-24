@@ -65,7 +65,7 @@ class ProcessingPipelineThread(QThread):
             self.app_config.uvtools_input_file,
             uvtop_filepath,
             self.app_config.uvtools_output_location,
-            self.session_temp_folder,
+            self.app_config.uvtools_temp_folder, # FIX: Use the base working folder for output
             self.app_config.output_file_prefix,
             self.run_timestamp
         )
