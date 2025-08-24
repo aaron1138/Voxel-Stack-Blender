@@ -20,6 +20,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 import cv2
 import numpy as np
 import os
+from scipy import ndimage
 
 from config import ProcessingMode
 
@@ -264,7 +265,10 @@ def _calculate_weighted_receding_gradient_field(current_white_mask, prior_binary
         clipped_distance_map = np.clip(receding_distance_map, 0, fade_dist)
         normalized_map = 1.0 - (clipped_distance_map / denominator)
 
-        weighted_accumulator += normalized_map * weight
+        # IMPORTANT: Mask the contribution to only apply within the current prior's receding area.
+        # This prevents areas outside the current receding mask from incorrectly adding a full-weighted value.
+        contribution = normalized_map * weight
+        weighted_accumulator += np.where(receding_white_areas > 0, contribution, 0)
 
     final_normalized_map = weighted_accumulator / total_weight
     final_gradient_map = (255 * final_normalized_map).astype(np.uint8)
@@ -282,7 +286,7 @@ def _calculate_weighted_receding_gradient_field(current_white_mask, prior_binary
 def _calculate_receding_gradient_field_enhanced_edt(current_white_mask, prior_binary_masks, config, debug_info=None):
     """
     Calculates a gradient field using an enhanced Euclidean Distance Transform (EDT)
-    with adaptive normalization for each disconnected receding area.
+    with adaptive normalization for each disconnected receding area. (Optimized)
     """
     if not prior_binary_masks:
         return np.zeros_like(current_white_mask, dtype=np.uint8)
@@ -305,36 +309,46 @@ def _calculate_receding_gradient_field_enhanced_edt(current_white_mask, prior_bi
 
     # 4. Find each disconnected receding area to normalize it independently
     num_labels, labels = cv2.connectedComponents(receding_white_areas)
+    if num_labels <= 1:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
 
-    final_gradient_map = np.zeros_like(current_white_mask, dtype=np.uint8)
+    # 5. OPTIMIZED: Calculate max distance for each region in a single pass
+    # We find the maximum value in `receding_distance_map` for each label from 1 to num_labels-1.
+    # The result is a list where the i-th element is the max value for label i+1.
+    max_vals_per_label = ndimage.maximum(receding_distance_map, labels=labels, index=np.arange(1, num_labels))
 
-    # 5. Iterate through each labeled region
-    for i in range(1, num_labels): # Start from 1 to skip the background
-        region_mask = (labels == i)
+    # Create a lookup table for the max values.
+    # The first element is 0 for the background (label 0).
+    max_vals_lut = np.concatenate(([0], max_vals_per_label))
 
-        # Note: minMaxLoc requires an 8-bit mask
-        min_val, max_val, _, _ = cv2.minMaxLoc(receding_distance_map, mask=region_mask.astype(np.uint8))
+    # 6. OPTIMIZED: Create a "max value map" using the LUT.
+    # Each pixel in `max_map` will have the max distance value of the region it belongs to.
+    max_map = max_vals_lut[labels]
 
-        if max_val > 0:
-            use_fixed_normalization = config.use_fixed_fade_receding
-            fade_distance = config.fixed_fade_distance_receding
-            denominator = fade_distance if use_fixed_normalization else max_val
-            if denominator <= 0: denominator = 1.0
+    # 7. OPTIMIZED: Vectorized normalization
+    use_fixed_normalization = config.use_fixed_fade_receding
+    fade_distance = config.fixed_fade_distance_receding
 
-            # Create a map of just this region's distances to avoid affecting other areas
-            region_dist_map = np.zeros_like(receding_distance_map, dtype=np.float32)
-            np.copyto(region_dist_map, receding_distance_map, where=region_mask)
+    if use_fixed_normalization:
+        denominator = np.full_like(max_map, fill_value=fade_distance, dtype=np.float32)
+    else:
+        denominator = max_map.astype(np.float32)
 
-            # Normalize the distances for this region
-            clipped_map = np.clip(region_dist_map, 0, denominator)
-            normalized_map = clipped_map / denominator
+    # Avoid division by zero for regions with no distance or if fixed fade is 0
+    denominator[denominator <= 0] = 1.0
 
-            # Invert and scale to 0-255
-            inverted_map = np.where(region_mask, 1.0 - normalized_map, 0)
-            region_gradient = (255 * inverted_map).astype(np.uint8)
+    # Clip the distance map to the calculated denominator (either fixed or region-max)
+    clipped_map = np.clip(receding_distance_map, 0, denominator)
 
-            # Add the processed region to the final map
-            final_gradient_map = cv2.add(final_gradient_map, region_gradient)
+    # Normalize the entire map at once
+    normalized_map = clipped_map / denominator
+
+    # Invert and scale to 0-255
+    inverted_map = 1.0 - normalized_map
+    final_gradient_map = (255 * inverted_map).astype(np.uint8)
+
+    # 8. Mask the final result to only include the original receding areas
+    final_gradient_map = cv2.bitwise_and(final_gradient_map, final_gradient_map, mask=receding_white_areas)
 
     return final_gradient_map
 

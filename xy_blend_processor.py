@@ -113,6 +113,8 @@ def apply_lut_operation(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
                 generated_lut = lut_manager.generate_sqrt_lut(lut_params.sqrt_param, *args)
             elif lut_params.lut_generation_type == "rodbard":
                 generated_lut = lut_manager.generate_rodbard_lut(lut_params.rodbard_param, *args)
+            elif lut_params.lut_generation_type == "spline":
+                generated_lut = lut_manager.generate_spline_lut(lut_params.spline_points, *args)
         
         elif lut_params.lut_source == "file":
             if lut_params.fixed_lut_path and os.path.exists(lut_params.fixed_lut_path):
