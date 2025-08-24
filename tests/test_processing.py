@@ -150,3 +150,47 @@ def test_enhanced_edt_max_fade_limit(base_config, edt_function_name):
     point_small_far = (50, 59)
     val_small_far = gradient[point_small_far]
     assert 108 < val_small_far < 112, f"Failed on {edt_function_name} implementation"
+
+def test_anisotropic_correction(base_config):
+    """
+    Tests that the anisotropic correction correctly scales the distance field.
+    """
+    # 1. Setup
+    cfg = base_config
+    cfg.anisotropic_params.enabled = True
+    cfg.anisotropic_params.x_factor = 2.0  # Stretch distances twice as much on X-axis
+    cfg.anisotropic_params.y_factor = 1.0  # Keep Y-axis normal
+    cfg.fixed_fade_distance_receding = 50.0 # Use a large fade distance to not interfere
+
+    # Create a central black square on a white background
+    # The distance transform will be calculated from the edges of this square
+    current_mask = np.ones((100, 100), dtype=np.uint8) * 255
+    cv2.rectangle(current_mask, (45, 45), (54, 54), 0, -1)
+
+    # The entire area is a receding area for this test
+    prior_mask = np.ones_like(current_mask) * 255
+
+    # 2. Execution
+    # We need to call the full dispatcher function to test the resize logic
+    from processing_core import _calculate_receding_gradient_field_enhanced_edt
+    gradient = _calculate_receding_gradient_field_enhanced_edt(cv2.bitwise_not(current_mask), [prior_mask], cfg)
+
+    # 3. Assertions
+    # Point 10 pixels to the left of the black box
+    point_x_dir = (50, 35)
+    # Point 10 pixels above the black box
+    point_y_dir = (35, 50)
+
+    val_x = gradient[point_x_dir]
+    val_y = gradient[point_y_dir]
+
+    # Because the X-axis distance is stretched by 2x, the gradient value
+    # at the same physical distance should be STRONGER (closer to white/255)
+    # than the Y-axis value, because its "perceived" distance is smaller.
+    # E.g., a physical distance of 10 on X is now ~20 in the stretched space.
+    # A larger distance means a smaller (weaker) gradient value.
+    assert val_x < val_y
+
+    # Check that some gradient exists
+    assert val_x > 0
+    assert val_y > 0

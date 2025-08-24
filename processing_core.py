@@ -352,7 +352,32 @@ def _calculate_receding_gradient_field_enhanced_edt(current_white_mask, prior_bi
         return np.zeros_like(current_white_mask, dtype=np.uint8)
 
     distance_transform_src = cv2.bitwise_not(current_white_mask)
-    distance_map = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5)
+
+    # --- Anisotropic Correction ---
+    if config.anisotropic_params.enabled:
+        ap = config.anisotropic_params
+        original_height, original_width = distance_transform_src.shape
+
+        # Clamp factors to prevent excessive scaling
+        x_factor = max(0.1, min(10.0, ap.x_factor))
+        y_factor = max(0.1, min(10.0, ap.y_factor))
+
+        # Only resize if factors are not 1.0 to avoid unnecessary work
+        if x_factor != 1.0 or y_factor != 1.0:
+            new_width = int(original_width * x_factor)
+            new_height = int(original_height * y_factor)
+
+            # Resize the source mask, calculate distance, then resize back
+            resized_src = cv2.resize(distance_transform_src, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
+            resized_dist_map = cv2.distanceTransform(resized_src, cv2.DIST_L2, 5)
+
+            # Resize the distance map back to original dimensions
+            distance_map = cv2.resize(resized_dist_map, (original_width, original_height), interpolation=cv2.INTER_LINEAR)
+        else:
+            distance_map = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5)
+    else:
+        distance_map = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5)
+
     receding_distance_map = cv2.bitwise_and(distance_map, distance_map, mask=receding_white_areas)
 
     num_labels, labels = cv2.connectedComponents(receding_white_areas)

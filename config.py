@@ -151,6 +151,14 @@ class RoiParameters:
 
 
 @dataclass
+class AnisotropicParams:
+    """Parameters for anisotropic distance correction."""
+    enabled: bool = False
+    x_factor: float = 1.0
+    y_factor: float = 1.0
+
+
+@dataclass
 class Config:
     """
     Main application configuration, updated with new UI fields.
@@ -175,6 +183,7 @@ class Config:
     receding_layers: int = 4
     use_fixed_fade_receding: bool = False
     fixed_fade_distance_receding: float = 10.0
+    anisotropic_params: AnisotropicParams = field(default_factory=AnisotropicParams)
     
     # --- Weighted Stack Mode Settings ---
     weighted_falloff_type: WeightingFalloff = WeightingFalloff.LINEAR
@@ -243,6 +252,11 @@ class Config:
                         roi_field_names = {f.name for f in fields(RoiParameters)}
                         filtered_roi_data = {k: v for k, v in value.items() if k in roi_field_names}
                         setattr(config_instance, key, RoiParameters(**filtered_roi_data))
+                elif key == 'anisotropic_params':
+                    if isinstance(value, dict):
+                        anisotropic_field_names = {f.name for f in fields(AnisotropicParams)}
+                        filtered_anisotropic_data = {k: v for k, v in value.items() if k in anisotropic_field_names}
+                        setattr(config_instance, key, AnisotropicParams(**filtered_anisotropic_data))
                 else:
                     if field_obj.type is bool and isinstance(value, str):
                         value = value.lower() in ('true', '1', 't', 'y')

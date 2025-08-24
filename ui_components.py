@@ -175,6 +175,28 @@ class ImageProcessorApp(QWidget):
         common_blending_layout.addWidget(self.fade_dist_receding_edit, 1, 1)
 
         common_blending_layout.setColumnStretch(2, 1)
+
+        # --- Anisotropic Correction ---
+        anisotropic_widget = QWidget()
+        anisotropic_layout = QHBoxLayout(anisotropic_widget)
+        anisotropic_layout.setContentsMargins(0, 0, 0, 0)
+        self.anisotropic_checkbox = QCheckBox("Enable Anisotropic Distance Correction")
+        anisotropic_layout.addWidget(self.anisotropic_checkbox)
+        anisotropic_layout.addWidget(QLabel("X Factor:"))
+        self.anisotropic_x_edit = QLineEdit("1.0")
+        self.anisotropic_x_edit.setValidator(QDoubleValidator(0.1, 10.0, 2, self))
+        self.anisotropic_x_edit.setFixedWidth(50)
+        anisotropic_layout.addWidget(self.anisotropic_x_edit)
+        anisotropic_layout.addWidget(QLabel("Y Factor:"))
+        self.anisotropic_y_edit = QLineEdit("1.0")
+        self.anisotropic_y_edit.setValidator(QDoubleValidator(0.1, 10.0, 2, self))
+        self.anisotropic_y_edit.setFixedWidth(50)
+        anisotropic_layout.addWidget(self.anisotropic_y_edit)
+        anisotropic_layout.addStretch(1)
+
+        # Add the new row of widgets to the grid layout
+        common_blending_layout.addWidget(anisotropic_widget, 2, 0, 1, 3)
+
         blending_layout.addLayout(common_blending_layout)
 
         # The stacked widget is no longer needed, but we still need the ROI-specific settings.
@@ -335,6 +357,9 @@ class ImageProcessorApp(QWidget):
         self.uvtools_output_input_radio.setChecked(config.uvtools_output_location == "input_folder")
         self.receding_layers_edit.setText(str(config.receding_layers))
         self.fade_dist_receding_edit.setText(str(config.fixed_fade_distance_receding))
+        self.anisotropic_checkbox.setChecked(config.anisotropic_params.enabled)
+        self.anisotropic_x_edit.setText(str(config.anisotropic_params.x_factor))
+        self.anisotropic_y_edit.setText(str(config.anisotropic_params.y_factor))
 
         # --- Blending Mode Loading ---
         index = self.blending_mode_combo.findData(config.blending_mode)
@@ -412,6 +437,12 @@ class ImageProcessorApp(QWidget):
 
         try: config.fixed_fade_distance_receding = float(self.fade_dist_receding_edit.text().replace(',', '.'))
         except ValueError: config.fixed_fade_distance_receding = 10.0
+
+        config.anisotropic_params.enabled = self.anisotropic_checkbox.isChecked()
+        try: config.anisotropic_params.x_factor = float(self.anisotropic_x_edit.text().replace(',', '.'))
+        except ValueError: config.anisotropic_params.x_factor = 1.0
+        try: config.anisotropic_params.y_factor = float(self.anisotropic_y_edit.text().replace(',', '.'))
+        except ValueError: config.anisotropic_params.y_factor = 1.0
 
         try: config.thread_count = int(self.thread_count_edit.text())
         except ValueError: config.thread_count = DEFAULT_NUM_WORKERS
