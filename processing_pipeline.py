@@ -30,6 +30,7 @@ class ProcessingPipelineThread(QThread):
         super().__init__()
         self.app_config = app_config
         self._is_running = True
+        self.error_occurred = False
         self.max_workers = max_workers
         self.run_timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         self.session_temp_folder = ""
@@ -156,7 +157,7 @@ class ProcessingPipelineThread(QThread):
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                 active_futures = set()
                 processed_count = 0
-                max_active_futures = self.max_workers * 2  # Keep a buffer of tasks
+                max_active_futures = self.max_workers * 2
 
                 def process_completed_futures(completed_futures):
                     nonlocal processed_count
@@ -168,9 +169,10 @@ class ProcessingPipelineThread(QThread):
                             self.progress_update.emit(int((processed_count / total_images) * 100))
                         except Exception as exc:
                             import traceback
+                            self.error_occurred = True # Set error flag
                             error_detail = f"An image processing task failed: {exc}\n{traceback.format_exc()}"
                             self.error_signal.emit(error_detail)
-                            self.stop_processing()
+                            self.stop_processing() # Stop submitting new tasks
                         active_futures.remove(future)
 
                 for i, filename in enumerate(image_filenames_filtered):
@@ -179,17 +181,15 @@ class ProcessingPipelineThread(QThread):
                         break
 
                     if len(active_futures) >= max_active_futures:
-                        # Wait for at least one future to complete
                         done, _ = concurrent.futures.wait(active_futures, return_when=concurrent.futures.FIRST_COMPLETED)
                         process_completed_futures(done)
 
                     self.status_update.emit(f"Analyzing {filename} ({i + 1}/{total_images})")
                     filepath = os.path.join(input_path, filename)
-
                     binary_image, original_image = core.load_image(filepath)
                     if binary_image is None:
                         self.status_update.emit(f"Skipping unloadable image: {filename}")
-                        total_images -= 1 # Adjust total for progress calculation
+                        total_images = max(1, total_images - 1)
                         continue
 
                     classified_rois = []
@@ -199,40 +199,37 @@ class ProcessingPipelineThread(QThread):
                         classified_rois = tracker.update_and_classify(rois, layer_index, self.app_config)
 
                     image_data_for_task = {
-                        'filepath': filepath,
-                        'binary_image': binary_image,
-                        'original_image': original_image,
-                        'classified_rois': classified_rois
+                        'filepath': filepath, 'binary_image': binary_image,
+                        'original_image': original_image, 'classified_rois': classified_rois
                     }
-
                     future = executor.submit(
-                        self._process_single_image_task,
-                        image_data_for_task,
-                        list(reversed(prior_binary_masks_cache)),  # REVERSED: Pass newest-to-oldest
-                        self.app_config,
-                        self.app_config.xy_blend_pipeline,
-                        processing_output_path,
+                        self._process_single_image_task, image_data_for_task,
+                        list(reversed(prior_binary_masks_cache)), self.app_config,
+                        self.app_config.xy_blend_pipeline, processing_output_path,
                         self.app_config.debug_save
                     )
                     active_futures.add(future)
-
                     prior_binary_masks_cache.append(binary_image)
 
-                # Wait for all remaining futures to complete
                 if self._is_running and active_futures:
                     process_completed_futures(concurrent.futures.as_completed(active_futures))
 
-            self.status_update.emit("All image processing tasks completed.")
-
-            if self.app_config.input_mode == "uvtools" and self._is_running:
+            # Repackaging logic
+            if self.app_config.input_mode == "uvtools" and not self.error_occurred:
+                if self._is_running:
+                    self.status_update.emit("All image processing tasks completed.")
+                else: # User-initiated stop
+                    self.status_update.emit("Processing stopped by user, repacking completed layers...")
                 self._run_uvtools_repack(processing_output_path)
 
         except Exception as e:
+            self.error_occurred = True # Set error flag
             import traceback
-            error_info = f"Error in processing thread: {e}\n\n{traceback.format_exc()}"
+            error_info = f"A critical error occurred in the processing pipeline: {e}\n\n{traceback.format_exc()}"
             self.error_signal.emit(error_info)
         finally:
-            if self.app_config.input_mode == "uvtools" and self.app_config.uvtools_delete_temp_on_completion:
+            # Cleanup logic
+            if self.app_config.input_mode == "uvtools" and self.app_config.uvtools_delete_temp_on_completion and not self.error_occurred:
                 if self.session_temp_folder and os.path.isdir(self.session_temp_folder):
                     self.status_update.emit(f"Deleting temporary folder: {self.session_temp_folder}")
                     try:
@@ -241,10 +238,12 @@ class ProcessingPipelineThread(QThread):
                     except Exception as e:
                         self.error_signal.emit(f"Could not delete temp folder: {e}")
 
-            if self._is_running:
+            if not self.error_occurred and self._is_running:
                 self.status_update.emit("Processing complete!")
-            else:
-                self.status_update.emit("Processing stopped by user or error.")
+            elif self.error_occurred:
+                self.status_update.emit("Processing failed due to an error. Temporary files have been preserved for inspection.")
+            else: # Not an error, but was stopped
+                self.status_update.emit("Processing stopped.")
             self.finished_signal.emit()
 
     def stop_processing(self):
