@@ -21,6 +21,7 @@ import cv2
 import numpy as np
 import os
 from scipy import ndimage
+import numba
 
 from config import ProcessingMode
 
@@ -283,10 +284,61 @@ def _calculate_weighted_receding_gradient_field(current_white_mask, prior_binary
     return final_gradient_map
 
 
+def _calculate_receding_gradient_field_enhanced_edt_scipy(receding_distance_map, labels, num_labels, fade_distance_limit):
+    """
+    Calculates the Enhanced EDT gradient using the SciPy vectorized approach.
+    """
+    max_vals_per_label = ndimage.maximum(receding_distance_map, labels=labels, index=np.arange(1, num_labels))
+    max_vals_lut = np.concatenate(([0], max_vals_per_label))
+    max_map = max_vals_lut[labels]
+
+    denominator = np.minimum(max_map, fade_distance_limit)
+    denominator = denominator.astype(np.float32)
+    denominator[denominator <= 0] = 1.0
+
+    clipped_map = np.clip(receding_distance_map, 0, denominator)
+    normalized_map = clipped_map / denominator
+    inverted_map = 1.0 - normalized_map
+    final_gradient_map = (255 * inverted_map).astype(np.uint8)
+    return final_gradient_map
+
+@numba.jit(nopython=True, cache=True)
+def _calculate_receding_gradient_field_enhanced_edt_numba(receding_distance_map, labels, num_labels, fade_distance_limit):
+    """
+    Calculates the Enhanced EDT gradient using a Numba JIT-compiled loop for performance.
+    """
+    final_gradient_map = np.zeros_like(receding_distance_map, dtype=np.uint8)
+
+    # First pass: find max distance for each label
+    max_vals = np.zeros(num_labels, dtype=np.float32)
+    for y in range(labels.shape[0]):
+        for x in range(labels.shape[1]):
+            label = labels[y, x]
+            if label > 0:
+                dist = receding_distance_map[y, x]
+                if dist > max_vals[label]:
+                    max_vals[label] = dist
+
+    # Second pass: calculate final gradient
+    for y in range(labels.shape[0]):
+        for x in range(labels.shape[1]):
+            label = labels[y, x]
+            if label > 0:
+                dist = receding_distance_map[y, x]
+
+                denominator = min(max_vals[label], fade_distance_limit)
+                if denominator > 0:
+                    clipped_dist = min(dist, denominator)
+                    normalized = clipped_dist / denominator
+                    inverted = 1.0 - normalized
+                    final_gradient_map[y, x] = int(inverted * 255)
+
+    return final_gradient_map
+
 def _calculate_receding_gradient_field_enhanced_edt(current_white_mask, prior_binary_masks, config, debug_info=None):
     """
-    Calculates a gradient field using an enhanced Euclidean Distance Transform (EDT)
-    with adaptive normalization for each disconnected receding area. (Optimized)
+    Dispatcher for Enhanced EDT. Sets up common data then calls either the
+    SciPy or Numba implementation based on the user's config.
     """
     if not prior_binary_masks:
         return np.zeros_like(current_white_mask, dtype=np.uint8)
@@ -295,64 +347,36 @@ def _calculate_receding_gradient_field_enhanced_edt(current_white_mask, prior_bi
     if prior_white_combined_mask is None:
         return np.zeros_like(current_white_mask, dtype=np.uint8)
 
-    # 1. Identify all receding white areas
     receding_white_areas = cv2.bitwise_and(prior_white_combined_mask, cv2.bitwise_not(current_white_mask))
     if cv2.countNonZero(receding_white_areas) == 0:
         return np.zeros_like(current_white_mask, dtype=np.uint8)
 
-    # 2. Calculate a single global distance transform from the current layer's features
     distance_transform_src = cv2.bitwise_not(current_white_mask)
     distance_map = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5)
-
-    # 3. Mask the distance map to only include receding areas
     receding_distance_map = cv2.bitwise_and(distance_map, distance_map, mask=receding_white_areas)
 
-    # 4. Find each disconnected receding area to normalize it independently
     num_labels, labels = cv2.connectedComponents(receding_white_areas)
     if num_labels <= 1:
         return np.zeros_like(current_white_mask, dtype=np.uint8)
 
-    # 5. OPTIMIZED: Calculate max distance for each region in a single pass
-    # We find the maximum value in `receding_distance_map` for each label from 1 to num_labels-1.
-    # The result is a list where the i-th element is the max value for label i+1.
-    max_vals_per_label = ndimage.maximum(receding_distance_map, labels=labels, index=np.arange(1, num_labels))
-
-    # Create a lookup table for the max values.
-    # The first element is 0 for the background (label 0).
-    max_vals_lut = np.concatenate(([0], max_vals_per_label))
-
-    # 6. OPTIMIZED: Create a "max value map" using the LUT.
-    # Each pixel in `max_map` will have the max distance value of the region it belongs to.
-    max_map = max_vals_lut[labels]
-
-    # 7. OPTIMIZED: Vectorized normalization for Enhanced EDT mode.
-    # This mode now always uses adaptive normalization, where the user-provided
-    # fade distance acts as a maximum limit ("Max Fade").
     fade_distance_limit = config.fixed_fade_distance_receding
 
-    # The normalization denominator for each region is the smaller of its
-    # natural max distance or the user-defined limit.
-    denominator = np.minimum(max_map, fade_distance_limit)
-    denominator = denominator.astype(np.float32)
+    if config.use_numba_jit:
+        try:
+            final_gradient_map = _calculate_receding_gradient_field_enhanced_edt_numba(
+                receding_distance_map, labels.astype(np.int32), num_labels, fade_distance_limit
+            )
+        except Exception as e:
+            print(f"Numba JIT execution failed: {e}. Falling back to SciPy implementation.")
+            final_gradient_map = _calculate_receding_gradient_field_enhanced_edt_scipy(
+                receding_distance_map, labels, num_labels, fade_distance_limit
+            )
+    else:
+        final_gradient_map = _calculate_receding_gradient_field_enhanced_edt_scipy(
+            receding_distance_map, labels, num_labels, fade_distance_limit
+        )
 
-    # Avoid division by zero for regions with no distance or if the limit is 0
-    denominator[denominator <= 0] = 1.0
-
-    # Clip the distance map to the calculated denominator. This ensures that
-    # distances greater than the denominator are treated as the max fade.
-    clipped_map = np.clip(receding_distance_map, 0, denominator)
-
-    # Normalize the entire map at once
-    normalized_map = clipped_map / denominator
-
-    # Invert and scale to 0-255
-    inverted_map = 1.0 - normalized_map
-    final_gradient_map = (255 * inverted_map).astype(np.uint8)
-
-    # 8. Mask the final result to only include the original receding areas
-    final_gradient_map = cv2.bitwise_and(final_gradient_map, final_gradient_map, mask=receding_white_areas)
-
-    return final_gradient_map
+    return cv2.bitwise_and(final_gradient_map, final_gradient_map, mask=receding_white_areas)
 
 
 def process_z_blending(current_white_mask, prior_masks, config, classified_rois, debug_info=None):
@@ -363,7 +387,7 @@ def process_z_blending(current_white_mask, prior_masks, config, classified_rois,
     if config.blending_mode == ProcessingMode.ROI_FADE:
         return _calculate_receding_gradient_field_roi_fade(
             current_white_mask,
-            prior_masks,  # Expects a single combined mask
+            prior_masks,
             config,
             classified_rois,
             debug_info
@@ -371,21 +395,21 @@ def process_z_blending(current_white_mask, prior_masks, config, classified_rois,
     elif config.blending_mode == ProcessingMode.WEIGHTED_STACK:
         return _calculate_weighted_receding_gradient_field(
             current_white_mask,
-            prior_masks, # Expects a list of masks
+            prior_masks,
             config,
             debug_info
         )
     elif config.blending_mode == ProcessingMode.ENHANCED_EDT:
         return _calculate_receding_gradient_field_enhanced_edt(
             current_white_mask,
-            prior_masks, # Expects a list of masks
+            prior_masks,
             config,
             debug_info
         )
     else:  # Default to FIXED_FADE
         return _calculate_receding_gradient_field_fixed_fade(
             current_white_mask,
-            prior_masks,  # Expects a single combined mask
+            prior_masks,
             config,
             debug_info
         )

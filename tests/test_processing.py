@@ -8,7 +8,11 @@ import pytest
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from config import Config, ProcessingMode
-from processing_core import _calculate_weighted_receding_gradient_field, _calculate_receding_gradient_field_enhanced_edt
+from processing_core import (
+    _calculate_weighted_receding_gradient_field, find_prior_combined_white_mask,
+    _calculate_receding_gradient_field_enhanced_edt_scipy,
+    _calculate_receding_gradient_field_enhanced_edt_numba
+)
 
 @pytest.fixture
 def base_config():
@@ -85,56 +89,64 @@ def test_empty_inputs(base_config):
     gradient_no_weights = _calculate_weighted_receding_gradient_field(current_mask, [prior_mask], base_config)
     assert np.sum(gradient_no_weights) == 0
 
-def test_enhanced_edt_max_fade_limit(base_config):
+def edt_setup(current_white_mask, prior_binary_masks):
+    """Helper to perform the common setup for EDT tests."""
+    prior_white_combined_mask = find_prior_combined_white_mask(prior_binary_masks)
+    receding_white_areas = cv2.bitwise_and(prior_white_combined_mask, cv2.bitwise_not(current_white_mask))
+    distance_transform_src = cv2.bitwise_not(current_white_mask)
+    distance_map = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5)
+    receding_distance_map = cv2.bitwise_and(distance_map, distance_map, mask=receding_white_areas)
+    num_labels, labels = cv2.connectedComponents(receding_white_areas)
+    return receding_distance_map, labels, num_labels, receding_white_areas
+
+@pytest.mark.parametrize("edt_function_name", [
+    "scipy",
+    "numba"
+])
+def test_enhanced_edt_max_fade_limit(base_config, edt_function_name):
     """
     Tests that the Enhanced EDT mode correctly uses the fade distance
-    as a "Max Fade" limit on its adaptive normalization.
+    as a "Max Fade" limit on its adaptive normalization. This test runs
+    for both the SciPy and Numba implementations.
     """
     # 1. Setup
     cfg = base_config
-    cfg.blending_mode = ProcessingMode.ENHANCED_EDT
-    # Set a Max Fade limit of 10.0 pixels
-    cfg.fixed_fade_distance_receding = 10.0
-    # This setting is now ignored by Enhanced EDT, but we set it for clarity
-    cfg.use_fixed_fade_receding = False
+    fade_distance_limit = 10.0
 
     current_mask = np.zeros((100, 100), dtype=np.uint8)
     cv2.rectangle(current_mask, (45, 45), (55, 55), 255, -1)
 
-    # Create two disconnected prior masks, one creating a small receding area, one large
     prior_mask = np.zeros_like(current_mask)
-    # Large area on the left (natural max dist ~20.6, will be capped by Max Fade)
     cv2.rectangle(prior_mask, (25, 40), (45, 60), 255, -1)
-    # Small area on the right (natural max dist ~7.07, will not be capped)
     cv2.rectangle(prior_mask, (55, 40), (60, 60), 255, -1)
 
-    prior_masks_for_func = [prior_mask]
-
     # 2. Execution
-    gradient = _calculate_receding_gradient_field_enhanced_edt(current_mask, prior_masks_for_func, cfg)
+    receding_dist_map, labels, num_labels, mask = edt_setup(current_mask, [prior_mask])
+
+    if edt_function_name == "scipy":
+        gradient = _calculate_receding_gradient_field_enhanced_edt_scipy(
+            receding_dist_map, labels, num_labels, fade_distance_limit
+        )
+    else: # numba
+        gradient = _calculate_receding_gradient_field_enhanced_edt_numba(
+            receding_dist_map, labels.astype(np.int32), num_labels, fade_distance_limit
+        )
+
+    gradient = cv2.bitwise_and(gradient, gradient, mask=mask)
 
     # 3. Assertions
-    # Large region's denominator is capped at 10.0. Small region's is ~7.07.
-
-    # Point in the large gap (dist=10). Expected: (1 - 10/10.0)*255 = 0
     point_large_gap = (50, 35)
     val_large_gap = gradient[point_large_gap]
-    assert val_large_gap == 0
+    assert val_large_gap == 0, f"Failed on {edt_function_name} implementation"
 
-    # Point in the small gap (dist=2). Denominator is ~7.07. Unchanged.
-    # Expected: (1 - 2/7.07)*255 = 182
     point_small_gap = (50, 57)
     val_small_gap = gradient[point_small_gap]
-    assert 180 < val_small_gap < 185
+    assert 180 < val_small_gap < 185, f"Failed on {edt_function_name} implementation"
 
-    # Point at the far edge of the large gap (dist=20). Dist is clipped to 10.
-    # Expected: (1 - 10/10.0)*255 = 0
     point_large_far = (50, 25)
     val_large_far = gradient[point_large_far]
-    assert val_large_far == 0
+    assert val_large_far == 0, f"Failed on {edt_function_name} implementation"
 
-    # Point at the far edge of the small gap (dist=4). Denom ~7.07. Unchanged.
-    # Expected: (1 - 4/7.07)*255 = 110
     point_small_far = (50, 59)
     val_small_far = gradient[point_small_far]
-    assert 108 < val_small_far < 112
+    assert 108 < val_small_far < 112, f"Failed on {edt_function_name} implementation"
