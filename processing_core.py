@@ -325,19 +325,21 @@ def _calculate_receding_gradient_field_enhanced_edt(current_white_mask, prior_bi
     # Each pixel in `max_map` will have the max distance value of the region it belongs to.
     max_map = max_vals_lut[labels]
 
-    # 7. OPTIMIZED: Vectorized normalization
-    use_fixed_normalization = config.use_fixed_fade_receding
-    fade_distance = config.fixed_fade_distance_receding
+    # 7. OPTIMIZED: Vectorized normalization for Enhanced EDT mode.
+    # This mode now always uses adaptive normalization, where the user-provided
+    # fade distance acts as a maximum limit ("Max Fade").
+    fade_distance_limit = config.fixed_fade_distance_receding
 
-    if use_fixed_normalization:
-        denominator = np.full_like(max_map, fill_value=fade_distance, dtype=np.float32)
-    else:
-        denominator = max_map.astype(np.float32)
+    # The normalization denominator for each region is the smaller of its
+    # natural max distance or the user-defined limit.
+    denominator = np.minimum(max_map, fade_distance_limit)
+    denominator = denominator.astype(np.float32)
 
-    # Avoid division by zero for regions with no distance or if fixed fade is 0
+    # Avoid division by zero for regions with no distance or if the limit is 0
     denominator[denominator <= 0] = 1.0
 
-    # Clip the distance map to the calculated denominator (either fixed or region-max)
+    # Clip the distance map to the calculated denominator. This ensures that
+    # distances greater than the denominator are treated as the max fade.
     clipped_map = np.clip(receding_distance_map, 0, denominator)
 
     # Normalize the entire map at once

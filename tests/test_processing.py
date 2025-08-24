@@ -85,23 +85,27 @@ def test_empty_inputs(base_config):
     gradient_no_weights = _calculate_weighted_receding_gradient_field(current_mask, [prior_mask], base_config)
     assert np.sum(gradient_no_weights) == 0
 
-def test_enhanced_edt_adaptive_normalization(base_config):
+def test_enhanced_edt_max_fade_limit(base_config):
     """
-    Tests that the Enhanced EDT mode normalizes disconnected regions independently.
+    Tests that the Enhanced EDT mode correctly uses the fade distance
+    as a "Max Fade" limit on its adaptive normalization.
     """
     # 1. Setup
     cfg = base_config
     cfg.blending_mode = ProcessingMode.ENHANCED_EDT
-    cfg.use_fixed_fade_receding = False # Ensure adaptive mode is on
+    # Set a Max Fade limit of 10.0 pixels
+    cfg.fixed_fade_distance_receding = 10.0
+    # This setting is now ignored by Enhanced EDT, but we set it for clarity
+    cfg.use_fixed_fade_receding = False
 
     current_mask = np.zeros((100, 100), dtype=np.uint8)
     cv2.rectangle(current_mask, (45, 45), (55, 55), 255, -1)
 
     # Create two disconnected prior masks, one creating a small receding area, one large
     prior_mask = np.zeros_like(current_mask)
-    # Large area on the left (20px wide)
+    # Large area on the left (natural max dist ~20.6, will be capped by Max Fade)
     cv2.rectangle(prior_mask, (25, 40), (45, 60), 255, -1)
-    # Small area on the right (5px wide)
+    # Small area on the right (natural max dist ~7.07, will not be capped)
     cv2.rectangle(prior_mask, (55, 40), (60, 60), 255, -1)
 
     prior_masks_for_func = [prior_mask]
@@ -110,25 +114,27 @@ def test_enhanced_edt_adaptive_normalization(base_config):
     gradient = _calculate_receding_gradient_field_enhanced_edt(current_mask, prior_masks_for_func, cfg)
 
     # 3. Assertions
-    # The max distance in the large region is ~20.6. The max in the small region is ~7.07.
-    # These values are used for normalization.
+    # Large region's denominator is capped at 10.0. Small region's is ~7.07.
 
-    # Point in the middle of the large gap (dist=10). Expected: (1 - 10/20.6)*255 = 131
+    # Point in the large gap (dist=10). Expected: (1 - 10/10.0)*255 = 0
     point_large_gap = (50, 35)
     val_large_gap = gradient[point_large_gap]
-    assert 130 < val_large_gap < 135
+    assert val_large_gap == 0
 
-    # Point in the middle of the small gap (dist=2). Expected: (1 - 2/7.07)*255 = 182
+    # Point in the small gap (dist=2). Denominator is ~7.07. Unchanged.
+    # Expected: (1 - 2/7.07)*255 = 182
     point_small_gap = (50, 57)
     val_small_gap = gradient[point_small_gap]
     assert 180 < val_small_gap < 185
 
-    # Point at the far edge of the large gap (dist=20). Expected: (1 - 20/20.6)*255 = 7
+    # Point at the far edge of the large gap (dist=20). Dist is clipped to 10.
+    # Expected: (1 - 10/10.0)*255 = 0
     point_large_far = (50, 25)
     val_large_far = gradient[point_large_far]
-    assert 5 < val_large_far < 15
+    assert val_large_far == 0
 
-    # Point at the far edge of the small gap (dist=4). Expected: (1 - 4/7.07)*255 = 110
+    # Point at the far edge of the small gap (dist=4). Denom ~7.07. Unchanged.
+    # Expected: (1 - 4/7.07)*255 = 110
     point_small_far = (50, 59)
     val_small_far = gradient[point_small_far]
     assert 108 < val_small_far < 112

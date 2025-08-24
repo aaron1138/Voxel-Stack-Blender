@@ -168,7 +168,8 @@ class ImageProcessorApp(QWidget):
         self.receding_layers_edit.setValidator(QIntValidator(0, 100, self))
         common_blending_layout.addWidget(self.receding_layers_edit, 0, 1)
 
-        common_blending_layout.addWidget(QLabel("Fade Distance (pixels):"), 1, 0)
+        self.fade_dist_label = QLabel("Fade Distance (pixels):")
+        common_blending_layout.addWidget(self.fade_dist_label, 1, 0)
         self.fade_dist_receding_edit = QLineEdit("10.0")
         self.fade_dist_receding_edit.setValidator(QDoubleValidator(0.1, 1000.0, 2, self))
         common_blending_layout.addWidget(self.fade_dist_receding_edit, 1, 1)
@@ -288,10 +289,18 @@ class ImageProcessorApp(QWidget):
 
     def on_blending_mode_changed(self, index):
         selected_mode = self.blending_mode_combo.itemData(index)
+
+        # Show/hide ROI settings
         if selected_mode == ProcessingMode.ROI_FADE:
             self.roi_settings_group.setVisible(True)
         else:
             self.roi_settings_group.setVisible(False)
+
+        # Update fade distance label text
+        if selected_mode == ProcessingMode.ENHANCED_EDT:
+            self.fade_dist_label.setText("Max Fade (pixels):")
+        else:
+            self.fade_dist_label.setText("Fade Distance (pixels):")
 
     def browse_folder(self, line_edit):
         folder = QFileDialog.getExistingDirectory(self, "Select Folder", line_edit.text())
