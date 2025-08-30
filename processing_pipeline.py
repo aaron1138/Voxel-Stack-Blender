@@ -17,6 +17,7 @@ import xy_blend_processor
 from roi_tracker import ROITracker
 import uvtools_wrapper
 from logger import Logger
+import zarr_engine
 
 class ProcessingPipelineThread(QThread):
     """
@@ -73,48 +74,59 @@ class ProcessingPipelineThread(QThread):
 
     @staticmethod
     def _process_single_image_task(
-        image_data: dict,
-        prior_binary_masks_snapshot: collections.deque,
+        layer_index: int,
+        original_voxels,
+        modified_voxels,
         app_config: Config,
         xy_blend_pipeline_ops: List[XYBlendOperation],
-        output_folder: str,
-        debug_save: bool
-    ) -> str:
-        """Processes a single image completely. This function runs in a worker thread."""
-        current_binary_image = image_data['binary_image']
-        original_image = image_data['original_image']
-        filepath = image_data['filepath']
+        output_folder: str, # for debug images
+        debug_save: bool,
+        base_filename: str, # for debug images
+        classified_rois: list
+    ) -> int:
+        """Processes a single slice from Zarr data. This function runs in a worker thread."""
+        original_image = original_voxels[layer_index]
+        _, current_binary_image = cv2.threshold(original_image, 127, 255, cv2.THRESH_BINARY)
 
-        debug_info = {'output_folder': output_folder, 'base_filename': os.path.splitext(os.path.basename(filepath))[0]} if debug_save else None
+        # Get prior masks from Zarr
+        look_down = app_config.receding_layers
+        start_index = max(0, layer_index - look_down)
+
+        prior_binary_masks_snapshot = []
+        if layer_index > 0:
+            # Slicing the Zarr array reads the data into memory
+            prior_slices = original_voxels[start_index:layer_index]
+            for s in prior_slices:
+                _, binary_mask = cv2.threshold(s, 127, 255, cv2.THRESH_BINARY)
+                prior_binary_masks_snapshot.append(binary_mask)
+            # Reverse the list to match the old logic (closest layer first)
+            prior_binary_masks_snapshot.reverse()
+
+        debug_info = {'output_folder': output_folder, 'base_filename': base_filename} if debug_save else None
 
         # Prepare the prior mask data based on the blending mode
         if app_config.blending_mode in [ProcessingMode.WEIGHTED_STACK, ProcessingMode.ENHANCED_EDT]:
-            # For these modes, pass the list of individual prior masks
-            prior_masks_for_blending = list(prior_binary_masks_snapshot)
+            prior_masks_for_blending = prior_binary_masks_snapshot
         else:
-            # For other modes, pass the single combined mask
-            prior_masks_for_blending = core.find_prior_combined_white_mask(list(prior_binary_masks_snapshot))
+            prior_masks_for_blending = core.find_prior_combined_white_mask(prior_binary_masks_snapshot)
 
         receding_gradient = core.process_z_blending(
             current_binary_image,
             prior_masks_for_blending,
             app_config,
-            image_data['classified_rois'],
+            classified_rois,
             debug_info=debug_info
         )
 
         output_image_from_core = core.merge_to_output(original_image, receding_gradient)
         final_processed_image = xy_blend_processor.process_xy_pipeline(output_image_from_core, xy_blend_pipeline_ops)
 
-        output_filename = os.path.basename(filepath)
-        output_filepath = os.path.join(output_folder, output_filename)
-        cv2.imwrite(output_filepath, final_processed_image)
-        print(f"Successfully wrote output file: {output_filepath}") # Verification print
-        return output_filepath
+        modified_voxels[layer_index] = final_processed_image
+        return layer_index
 
     def run(self):
         """
-        The main processing loop.
+        The main processing loop using Zarr as an intermediate store.
         """
         self.logger.log("Run started.")
         self.logger.log_config(self.app_config)
@@ -128,15 +140,21 @@ class ProcessingPipelineThread(QThread):
         try:
             input_path = ""
             processing_output_path = ""
+            zarr_storage_path = ""
 
             if self.app_config.input_mode == "uvtools":
                 input_path = self._run_uvtools_extraction()
                 self.logger.log("UVTools extraction completed.")
-                processing_output_path = os.path.join(self.session_temp_folder, "Output")
+                # Define paths for temporary and final output
+                self.session_temp_folder = os.path.dirname(input_path)
+                processing_output_path = os.path.join(self.session_temp_folder, "Output_PNGs")
+                zarr_storage_path = os.path.join(self.session_temp_folder, "zarr_data")
                 os.makedirs(processing_output_path, exist_ok=True)
             else:
                 input_path = self.app_config.input_folder
                 processing_output_path = self.app_config.output_folder
+                # Place Zarr data in a subfolder of the output directory
+                zarr_storage_path = os.path.join(self.app_config.output_folder, "zarr_data_temp")
 
             all_image_filenames = sorted(
                 [f for f in os.listdir(input_path) if f.lower().endswith(('.png', '.bmp', '.tif', '.tiff'))],
@@ -154,13 +172,31 @@ class ProcessingPipelineThread(QThread):
 
             total_images = len(image_filenames_filtered)
             if total_images == 0:
-                error_msg = "No images found in the specified folder or index range."
-                self.logger.log(f"ERROR: {error_msg}")
-                self.error_signal.emit(error_msg)
-                return
+                raise ValueError("No images found in the specified folder or index range.")
 
-            self.logger.log(f"Found {total_images} images to process.")
-            prior_binary_masks_cache = collections.deque(maxlen=self.app_config.receding_layers)
+            # --- Zarr Ingestion Phase ---
+            self.status_update.emit("Initializing Zarr storage...")
+            self.logger.log("Initializing Zarr storage.")
+            first_image_path = os.path.join(input_path, image_filenames_filtered[0])
+            _, first_image = core.load_image(first_image_path)
+            if first_image is None:
+                raise ValueError(f"Could not read first image to determine dimensions: {first_image_path}")
+            height, width = first_image.shape
+
+            chunk_size = (1, height, width) # Slice-wise chunking
+
+            original_voxels, modified_voxels = zarr_engine.initialize_storage(
+                path=zarr_storage_path, layers=total_images, height=height, width=width, chunk_size=chunk_size
+            )
+            self.status_update.emit("Streaming image slices into Zarr...")
+            self.logger.log("Streaming image slices into Zarr.")
+            full_image_paths = [os.path.join(input_path, f) for f in image_filenames_filtered]
+            zarr_engine.load_slices_to_zarr(full_image_paths, original_voxels, self.max_workers)
+            self.status_update.emit("Finished streaming to Zarr.")
+            self.logger.log("Finished streaming to Zarr.")
+            # --- End Zarr Ingestion Phase ---
+
+            self.logger.log(f"Processing {total_images} images from Zarr store.")
             tracker = ROITracker()
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
@@ -188,66 +224,88 @@ class ProcessingPipelineThread(QThread):
                 for i, filename in enumerate(image_filenames_filtered):
                     if not self._is_running:
                         self.logger.log("Processing stopped by user.")
-                        self.status_update.emit("Processing stopped by user.")
                         break
 
                     if len(active_futures) >= max_active_futures:
                         done, _ = concurrent.futures.wait(active_futures, return_when=concurrent.futures.FIRST_COMPLETED)
                         process_completed_futures(done)
 
-                    self.status_update.emit(f"Analyzing {filename} ({i + 1}/{total_images})")
-                    filepath = os.path.join(input_path, filename)
-                    binary_image, original_image = core.load_image(filepath)
-                    if binary_image is None:
-                        self.status_update.emit(f"Skipping unloadable image: {filename}")
-                        total_images = max(1, total_images - 1)
-                        continue
+                    self.status_update.emit(f"Submitting slice {i + 1}/{total_images} for processing.")
 
                     classified_rois = []
                     if self.app_config.blending_mode == ProcessingMode.ROI_FADE:
-                        layer_index = get_numeric_part(filename)
+                        original_image = original_voxels[i]
+                        _, binary_image = cv2.threshold(original_image, 127, 255, cv2.THRESH_BINARY)
+                        layer_index_num = get_numeric_part(filename)
                         rois = core.identify_rois(binary_image, self.app_config.roi_params.min_size)
-                        classified_rois = tracker.update_and_classify(rois, layer_index, self.app_config)
+                        classified_rois = tracker.update_and_classify(rois, layer_index_num, self.app_config)
 
-                    image_data_for_task = {
-                        'filepath': filepath, 'binary_image': binary_image,
-                        'original_image': original_image, 'classified_rois': classified_rois
-                    }
+                    base_filename = os.path.splitext(filename)[0]
                     future = executor.submit(
-                        self._process_single_image_task, image_data_for_task,
-                        list(reversed(prior_binary_masks_cache)), self.app_config,
+                        self._process_single_image_task, i,
+                        original_voxels, modified_voxels, self.app_config,
                         self.app_config.xy_blend_pipeline, processing_output_path,
-                        self.app_config.debug_save
+                        self.app_config.debug_save, base_filename, classified_rois
                     )
                     active_futures.add(future)
-                    prior_binary_masks_cache.append(binary_image)
 
                 if self._is_running and active_futures:
                     process_completed_futures(concurrent.futures.as_completed(active_futures))
 
-            self.logger.log("Stack blending complete.")
-            if self.app_config.input_mode == "uvtools" and not self.error_occurred:
-                if self._is_running:
-                    self.status_update.emit("All image processing tasks completed.")
-                else:
-                    self.status_update.emit("Processing stopped by user, repacking completed layers...")
+            if self.error_occurred or not self._is_running:
+                 raise InterruptedError("Processing stopped due to error or user request.")
 
+            # --- Zarr Output Phase ---
+            self.status_update.emit("Writing output images from Zarr storage...")
+            self.logger.log("Writing output images from Zarr storage.")
+
+            def save_slice(args):
+                layer_index, zarr_array, output_folder, filename = args
+                try:
+                    image = zarr_array[layer_index]
+                    output_filepath = os.path.join(output_folder, filename)
+                    cv2.imwrite(output_filepath, image)
+                    return True
+                except Exception as e:
+                    self.logger.log(f"ERROR: Could not save slice {layer_index}: {e}")
+                    return False
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                tasks = [(i, modified_voxels, processing_output_path, filename) for i, filename in enumerate(image_filenames_filtered)]
+                results = list(executor.map(save_slice, tasks))
+                successful_saves = sum(1 for r in results if r)
+                self.logger.log(f"Successfully saved {successful_saves}/{total_images} images.")
+
+            self.status_update.emit("Finished writing output images.")
+            # --- End Zarr Output Phase ---
+
+            self.logger.log("Stack blending complete.")
+            if self.app_config.input_mode == "uvtools":
                 self.logger.log("Starting UVTools repack.")
                 self._run_uvtools_repack(processing_output_path)
                 self.logger.log("UVTools repack completed.")
 
-        except Exception as e:
-            self.error_occurred = True
-            import traceback
-            error_info = f"A critical error occurred in the processing pipeline: {e}\n\n{traceback.format_exc()}"
-            self.logger.log(f"CRITICAL ERROR in pipeline: {error_info}")
-            self.error_signal.emit(error_info)
+        except (Exception, InterruptedError) as e:
+            if not isinstance(e, InterruptedError):
+                self.error_occurred = True
+                import traceback
+                error_info = f"A critical error occurred: {e}\n\n{traceback.format_exc()}"
+                self.logger.log(f"CRITICAL ERROR in pipeline: {error_info}")
+                self.error_signal.emit(error_info)
         finally:
             self.logger.log("Run finalizing.")
+            # Cleanup logic for Zarr data if not in debug mode and successful
+            if os.path.exists(zarr_storage_path) and not self.app_config.debug_save:
+                 try:
+                    shutil.rmtree(zarr_storage_path)
+                    self.logger.log(f"Cleaned up Zarr temp directory: {zarr_storage_path}")
+                 except Exception as e:
+                    self.logger.log(f"WARNING: Could not delete Zarr temp folder: {e}")
+
             if self.app_config.input_mode == "uvtools" and self.app_config.uvtools_delete_temp_on_completion and not self.error_occurred:
                 if self.session_temp_folder and os.path.isdir(self.session_temp_folder):
                     self.status_update.emit(f"Deleting temporary folder: {self.session_temp_folder}")
-                    self.logger.log("Deleting temporary files.")
+                    # Note: Zarr folder is inside this, so it gets deleted too.
                     try:
                         shutil.rmtree(self.session_temp_folder)
                         self.status_update.emit("Temporary files deleted.")
@@ -260,9 +318,9 @@ class ProcessingPipelineThread(QThread):
                 self.status_update.emit("Processing complete!")
                 self.logger.log("Run completed successfully.")
             elif self.error_occurred:
-                self.status_update.emit("Processing failed due to an error. Temporary files have been preserved for inspection.")
+                self.status_update.emit("Processing failed. Temp files may be preserved.")
                 self.logger.log("Run failed due to an error.")
-            else:
+            else: # Stopped by user
                 self.status_update.emit("Processing stopped.")
                 self.logger.log("Run was stopped by the user.")
 

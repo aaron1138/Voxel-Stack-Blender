@@ -5,7 +5,7 @@ donfig==0.8.1.post1
 fonttools==4.59.0
 kiwisolver==1.4.8
 matplotlib==3.10.3
-numcodecs==0.16.1
+numcodecs==0.12.1
 numpy==2.2.6
 opencv-python==4.12.0.88
 packaging==25.0
@@ -23,3 +23,5 @@ six==1.17.0
 pytest
 typing_extensions==4.14.1
 numba==0.61.2
+zarr==2.18.2
+moderngl==5.10.0

@@ -146,6 +146,28 @@ class ImageProcessorApp(QWidget):
 
         self.io_stacked_widget.addWidget(uvtools_mode_widget)
 
+        # --- Voxel Dimensions ---
+        voxel_group = QGroupBox("Voxel Dimensions (µm)")
+        voxel_layout = QGridLayout(voxel_group)
+
+        voxel_layout.addWidget(QLabel("X:"), 0, 0)
+        self.voxel_x_edit = QLineEdit("25.0")
+        self.voxel_x_edit.setValidator(QDoubleValidator(1.0, 100.0, 2, self))
+        voxel_layout.addWidget(self.voxel_x_edit, 0, 1)
+
+        voxel_layout.addWidget(QLabel("Y:"), 0, 2)
+        self.voxel_y_edit = QLineEdit("25.0")
+        self.voxel_y_edit.setValidator(QDoubleValidator(1.0, 100.0, 2, self))
+        voxel_layout.addWidget(self.voxel_y_edit, 0, 3)
+
+        voxel_layout.addWidget(QLabel("Z:"), 0, 4)
+        self.voxel_z_edit = QLineEdit("50.0")
+        self.voxel_z_edit.setValidator(QDoubleValidator(1.0, 100.0, 2, self))
+        voxel_layout.addWidget(self.voxel_z_edit, 0, 5)
+        voxel_layout.setColumnStretch(6, 1)
+
+        io_layout.addWidget(voxel_group)
+
         main_processing_layout.addWidget(io_group)
 
         # --- Stack Blending Section ---
@@ -162,6 +184,11 @@ class ImageProcessorApp(QWidget):
         blending_mode_layout.addStretch(1)
         blending_layout.addLayout(blending_mode_layout)
 
+        # --- Anisotropic Correction Checkbox ---
+        self.anisotropic_checkbox = QCheckBox("Enable Anisotropic Correction")
+        self.anisotropic_checkbox.setToolTip("Use the Voxel Dimensions from the I/O tab to correct for anisotropy in distance calculations.")
+        blending_layout.addWidget(self.anisotropic_checkbox)
+
         common_blending_layout = QGridLayout()
         common_blending_layout.addWidget(QLabel("Receding Look Down Layers:"), 0, 0)
         self.receding_layers_edit = QLineEdit("3")
@@ -175,27 +202,6 @@ class ImageProcessorApp(QWidget):
         common_blending_layout.addWidget(self.fade_dist_receding_edit, 1, 1)
 
         common_blending_layout.setColumnStretch(2, 1)
-
-        # --- Anisotropic Correction ---
-        anisotropic_widget = QWidget()
-        anisotropic_layout = QHBoxLayout(anisotropic_widget)
-        anisotropic_layout.setContentsMargins(0, 0, 0, 0)
-        self.anisotropic_checkbox = QCheckBox("Enable Anisotropic Distance Correction")
-        anisotropic_layout.addWidget(self.anisotropic_checkbox)
-        anisotropic_layout.addWidget(QLabel("X Factor:"))
-        self.anisotropic_x_edit = QLineEdit("1.0")
-        self.anisotropic_x_edit.setValidator(QDoubleValidator(0.1, 10.0, 2, self))
-        self.anisotropic_x_edit.setFixedWidth(50)
-        anisotropic_layout.addWidget(self.anisotropic_x_edit)
-        anisotropic_layout.addWidget(QLabel("Y Factor:"))
-        self.anisotropic_y_edit = QLineEdit("1.0")
-        self.anisotropic_y_edit.setValidator(QDoubleValidator(0.1, 10.0, 2, self))
-        self.anisotropic_y_edit.setFixedWidth(50)
-        anisotropic_layout.addWidget(self.anisotropic_y_edit)
-        anisotropic_layout.addStretch(1)
-
-        # Add the new row of widgets to the grid layout
-        common_blending_layout.addWidget(anisotropic_widget, 2, 0, 1, 3)
 
         blending_layout.addLayout(common_blending_layout)
 
@@ -357,9 +363,12 @@ class ImageProcessorApp(QWidget):
         self.uvtools_output_input_radio.setChecked(config.uvtools_output_location == "input_folder")
         self.receding_layers_edit.setText(str(config.receding_layers))
         self.fade_dist_receding_edit.setText(str(config.fixed_fade_distance_receding))
+
+        # --- Anisotropy Settings ---
         self.anisotropic_checkbox.setChecked(config.anisotropic_params.enabled)
-        self.anisotropic_x_edit.setText(str(config.anisotropic_params.x_factor))
-        self.anisotropic_y_edit.setText(str(config.anisotropic_params.y_factor))
+        self.voxel_x_edit.setText(str(config.anisotropic_params.voxel_x_um))
+        self.voxel_y_edit.setText(str(config.anisotropic_params.voxel_y_um))
+        self.voxel_z_edit.setText(str(config.anisotropic_params.voxel_z_um))
 
         # --- Blending Mode Loading ---
         index = self.blending_mode_combo.findData(config.blending_mode)
@@ -439,10 +448,12 @@ class ImageProcessorApp(QWidget):
         except ValueError: config.fixed_fade_distance_receding = 10.0
 
         config.anisotropic_params.enabled = self.anisotropic_checkbox.isChecked()
-        try: config.anisotropic_params.x_factor = float(self.anisotropic_x_edit.text().replace(',', '.'))
-        except ValueError: config.anisotropic_params.x_factor = 1.0
-        try: config.anisotropic_params.y_factor = float(self.anisotropic_y_edit.text().replace(',', '.'))
-        except ValueError: config.anisotropic_params.y_factor = 1.0
+        try: config.anisotropic_params.voxel_x_um = float(self.voxel_x_edit.text().replace(',', '.'))
+        except ValueError: config.anisotropic_params.voxel_x_um = 25.0
+        try: config.anisotropic_params.voxel_y_um = float(self.voxel_y_edit.text().replace(',', '.'))
+        except ValueError: config.anisotropic_params.voxel_y_um = 25.0
+        try: config.anisotropic_params.voxel_z_um = float(self.voxel_z_edit.text().replace(',', '.'))
+        except ValueError: config.anisotropic_params.voxel_z_um = 50.0
 
         try: config.thread_count = int(self.thread_count_edit.text())
         except ValueError: config.thread_count = DEFAULT_NUM_WORKERS

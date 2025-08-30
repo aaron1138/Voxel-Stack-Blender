@@ -3,11 +3,14 @@ import os
 import numpy as np
 import cv2
 import pytest
+import tempfile
+import shutil
 
 # Add the root directory to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from config import Config, ProcessingMode
+from processing_pipeline import ProcessingPipelineThread
 from processing_core import (
     _calculate_weighted_receding_gradient_field, find_prior_combined_white_mask,
     _calculate_receding_gradient_field_enhanced_edt_scipy,
@@ -158,8 +161,8 @@ def test_anisotropic_correction(base_config):
     # 1. Setup
     cfg = base_config
     cfg.anisotropic_params.enabled = True
-    cfg.anisotropic_params.x_factor = 2.0  # Stretch distances twice as much on X-axis
-    cfg.anisotropic_params.y_factor = 1.0  # Keep Y-axis normal
+    cfg.anisotropic_params.voxel_x_um = 50.0  # X voxels are twice as wide as Y
+    cfg.anisotropic_params.voxel_y_um = 25.0
     cfg.fixed_fade_distance_receding = 50.0 # Use a large fade distance to not interfere
 
     # Create a central black square on a white background
@@ -194,3 +197,72 @@ def test_anisotropic_correction(base_config):
     # Check that some gradient exists
     assert val_x > 0
     assert val_y > 0
+
+def test_end_to_end_zarr_pipeline():
+    """
+    Tests the full processing pipeline with the new Zarr implementation.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        input_dir = os.path.join(temp_dir, "input")
+        output_dir = os.path.join(temp_dir, "output")
+        os.makedirs(input_dir)
+        os.makedirs(output_dir)
+
+        # 1. Create dummy images
+        # Frame 0: small square
+        img0 = np.zeros((100, 100), dtype=np.uint8)
+        cv2.rectangle(img0, (40, 40), (60, 60), 255, -1)
+        cv2.imwrite(os.path.join(input_dir, "000.png"), img0)
+
+        # Frame 1: larger square, should have no gradient from frame 0
+        img1 = np.zeros((100, 100), dtype=np.uint8)
+        cv2.rectangle(img1, (30, 30), (70, 70), 255, -1)
+        cv2.imwrite(os.path.join(input_dir, "001.png"), img1)
+
+        # Frame 2: smaller square, should have gradient from frame 1
+        img2 = img0.copy()
+        cv2.imwrite(os.path.join(input_dir, "002.png"), img2)
+
+        # 2. Setup Config
+        cfg = Config()
+        cfg.input_folder = input_dir
+        cfg.output_folder = output_dir
+        cfg.blending_mode = ProcessingMode.ENHANCED_EDT
+        cfg.receding_layers = 1
+        cfg.fixed_fade_distance_receding = 10.0
+        cfg.debug_save = False # Ensure cleanup happens
+        cfg.thread_count = 2
+
+        # 3. Run Pipeline
+        pipeline_thread = ProcessingPipelineThread(app_config=cfg, max_workers=cfg.thread_count)
+
+        errors = []
+        def on_error(e):
+            errors.append(e)
+
+        pipeline_thread.error_signal.connect(on_error)
+
+        # This will block until the thread is done because we are not running an event loop
+        pipeline_thread.run()
+
+        # 4. Assertions
+        assert not errors, f"Pipeline thread raised an error: {errors[0]}"
+
+        output_files = os.listdir(output_dir)
+        # The zarr_data_temp should have been deleted
+        assert "zarr_data_temp" not in output_files
+        assert len(output_files) == 3, "Incorrect number of output files created"
+        assert "000.png" in output_files
+        assert "001.png" in output_files
+        assert "002.png" in output_files
+
+        # Check that output images have content
+        out_img_2 = cv2.imread(os.path.join(output_dir, "002.png"), cv2.IMREAD_GRAYSCALE)
+        assert out_img_2 is not None
+        # Check for gradient pixels (should be some gray values)
+        assert np.any((out_img_2 > 0) & (out_img_2 < 255)), "Output image 2 should have blended gray pixels"
+
+        # Check that image 1 has no gradient (it's an expansion)
+        out_img_1 = cv2.imread(os.path.join(output_dir, "001.png"), cv2.IMREAD_GRAYSCALE)
+        assert out_img_1 is not None
+        assert not np.any((out_img_1 > 0) & (out_img_1 < 255)), "Output image 1 should not have blended gray pixels"

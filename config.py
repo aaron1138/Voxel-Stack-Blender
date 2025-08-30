@@ -154,8 +154,9 @@ class RoiParameters:
 class AnisotropicParams:
     """Parameters for anisotropic distance correction."""
     enabled: bool = False
-    x_factor: float = 1.0
-    y_factor: float = 1.0
+    voxel_x_um: float = 25.0
+    voxel_y_um: float = 25.0
+    voxel_z_um: float = 50.0
 
 
 @dataclass

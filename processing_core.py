@@ -356,14 +356,24 @@ def _calculate_receding_gradient_field_enhanced_edt(current_white_mask, prior_bi
     # --- Anisotropic Correction ---
     if config.anisotropic_params.enabled:
         ap = config.anisotropic_params
+
+        # Normalize against the smallest dimension to keep scaling factors >= 1
+        min_dim = min(ap.voxel_x_um, ap.voxel_y_um)
+        if min_dim <= 0: # Avoid division by zero
+            x_factor = 1.0
+            y_factor = 1.0
+        else:
+            x_factor = ap.voxel_x_um / min_dim
+            y_factor = ap.voxel_y_um / min_dim
+
         original_height, original_width = distance_transform_src.shape
 
-        # Clamp factors to prevent excessive scaling
-        x_factor = max(0.1, min(10.0, ap.x_factor))
-        y_factor = max(0.1, min(10.0, ap.y_factor))
+        # Clamp factors to prevent excessive scaling, as a safety measure
+        x_factor = max(0.1, min(10.0, x_factor))
+        y_factor = max(0.1, min(10.0, y_factor))
 
-        # Only resize if factors are not 1.0 to avoid unnecessary work
-        if x_factor != 1.0 or y_factor != 1.0:
+        # Only resize if factors are not effectively 1.0 to avoid unnecessary work
+        if not np.isclose(x_factor, 1.0) or not np.isclose(y_factor, 1.0):
             new_width = int(original_width * x_factor)
             new_height = int(original_height * y_factor)
 
@@ -371,7 +381,8 @@ def _calculate_receding_gradient_field_enhanced_edt(current_white_mask, prior_bi
             resized_src = cv2.resize(distance_transform_src, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
             resized_dist_map = cv2.distanceTransform(resized_src, cv2.DIST_L2, 5)
 
-            # Resize the distance map back to original dimensions
+            # Resize the distance map back to original dimensions.
+            # The resize operation correctly interpolates the scaled distance values.
             distance_map = cv2.resize(resized_dist_map, (original_width, original_height), interpolation=cv2.INTER_LINEAR)
         else:
             distance_map = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5)
