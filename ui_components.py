@@ -15,7 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-# ui_components.py (Final Touches)
+# ui_components.py
 
 import os
 import shutil
@@ -260,7 +260,7 @@ class ImageProcessorApp(QWidget):
         thread_layout.addStretch(1)
         general_layout.addLayout(thread_layout)
 
-        self.numba_checkbox = QCheckBox("Enable Numba JIT Acceleration (Experimental)")
+        self.numba_checkbox = QCheckBox("Enable Numba JIT Acceleration (Recommended)")
         self.numba_checkbox.setToolTip("Uses a Just-In-Time compiler (Numba) for the Enhanced EDT calculation, which may be significantly faster. Requires the 'numba' package.")
         general_layout.addWidget(self.numba_checkbox)
 
