@@ -15,18 +15,31 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-# config.py (Final UI Updates)
+# config.py (Spline Update)
 
 from dataclasses import dataclass, field, asdict, fields
 from typing import List, Optional, Union, Any
+from enum import Enum
 import json
 import os
 import copy
 
-# Define a sensible default for thread count, using system core count
 DEFAULT_NUM_WORKERS = max(1, os.cpu_count() - 1)
 
-# --- Data Classes for Pipeline Operations ---
+
+class ProcessingMode(Enum):
+    ENHANCED_EDT = "enhanced_edt"
+    FIXED_FADE = "fixed_fade"
+    ROI_FADE = "roi_fade"
+    WEIGHTED_STACK = "weighted_stack"
+
+
+class WeightingFalloff(Enum):
+    FLAT = "Flat"
+    LINEAR = "Linear"
+    EXPONENTIAL = "Exponential"
+    LOGARITHMIC = "Logarithmic"
+    GAUSSIAN = "Gaussian"
 
 @dataclass
 class LutParameters:
@@ -45,13 +58,18 @@ class LutParameters:
     exp_param: float = 2.0
     sqrt_param: float = 2.0
     rodbard_param: float = 1.0
+    
+    # NEW: Field to store control points for spline curves.
+    # Format: [[x1, y1], [x2, y2], ...] where x and y are 0-255
+    spline_points: List[List[int]] = field(default_factory=lambda: [[0, 0], [255, 255]])
+
     fixed_lut_path: str = ""
 
     def __post_init__(self):
         # (Validation logic remains the same as previous version)
         self.lut_source = self.lut_source.lower()
         if self.lut_source not in ["generated", "file"]: self.lut_source = "generated"
-        if self.lut_generation_type not in ["linear", "gamma", "s_curve", "log", "exp", "sqrt", "rodbard"]: self.lut_generation_type = "linear"
+        if self.lut_generation_type not in ["linear", "gamma", "s_curve", "log", "exp", "sqrt", "rodbard", "spline"]: self.lut_generation_type = "linear"
         self.input_min = max(0, min(255, self.input_min))
         self.input_max = max(0, min(255, self.input_max))
         if self.input_min > self.input_max: self.input_min, self.input_max = self.input_max, self.input_min
@@ -117,11 +135,36 @@ class XYBlendOperation:
         return LutParameters(**filtered_lut_data)
 
 @dataclass
+class RoiParameters:
+    """
+    Parameters for ROI (Region of Interest) processing.
+    """
+    min_size: int = 100
+
+    # Raft/Support detection settings
+    enable_raft_support_handling: bool = False
+    raft_layer_count: int = 5
+    raft_min_size: int = 10000
+    support_max_size: int = 500
+    support_max_layer: int = 1000
+    support_max_growth: float = 2.5
+
+
+@dataclass
+class AnisotropicParams:
+    """Parameters for anisotropic distance correction."""
+    enabled: bool = False
+    x_factor: float = 1.0
+    y_factor: float = 1.0
+
+
+@dataclass
 class Config:
     """
     Main application configuration, updated with new UI fields.
     """
     # --- I/O Settings ---
+    output_file_prefix: str = "Voxel_Blend_Processed_"
     input_mode: str = "folder" # "folder" or "uvtools"
     input_folder: str = ""
     output_folder: str = ""
@@ -132,35 +175,67 @@ class Config:
     uvtools_path: str = "C:\\Program Files\\UVTools\\UVToolsCmd.exe"
     uvtools_temp_folder: str = ""
     uvtools_input_file: str = ""
-    uvtools_output_location: str = "working_folder" # NEW: "working_folder" or "input_folder"
+    uvtools_output_location: str = "working_folder"
     uvtools_delete_temp_on_completion: bool = True
 
     # --- Stack Blending Settings ---
-    receding_layers: int = 3
+    blending_mode: ProcessingMode = ProcessingMode.FIXED_FADE
+    receding_layers: int = 4
     use_fixed_fade_receding: bool = False
     fixed_fade_distance_receding: float = 10.0
+    anisotropic_params: AnisotropicParams = field(default_factory=AnisotropicParams)
     
+    # --- Weighted Stack Mode Settings ---
+    weighted_falloff_type: WeightingFalloff = WeightingFalloff.LINEAR
+    manual_weights: List[int] = field(default_factory=lambda: [100, 75, 50, 25])
+    fade_distances_receding: List[float] = field(default_factory=lambda: [10.0, 10.0, 10.0, 10.0])
+
     # --- Overhang Settings (for future use) ---
     overhang_layers: int = 0
     use_fixed_fade_overhang: bool = False
     fixed_fade_distance_overhang: float = 10.0
 
+    # --- ROI Mode Settings ---
+    roi_params: RoiParameters = field(default_factory=RoiParameters)
+
     # --- General Settings ---
     thread_count: int = DEFAULT_NUM_WORKERS
+    use_numba_jit: bool = False
     debug_save: bool = False
     xy_blend_pipeline: List[XYBlendOperation] = field(default_factory=lambda: [XYBlendOperation("none")])
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        # Convert enums to their string values for JSON serialization
+        for key, value in d.items():
+            if isinstance(value, Enum):
+                d[key] = value.value
+        return d
 
     @classmethod
     def from_dict(cls, data: dict) -> "Config":
-        # This robust loading method remains the same and will handle the new fields
         config_instance = cls()
         field_map = {f.name: f for f in fields(cls)}
         for key, value in data.items():
             if key in field_map:
                 field_obj = field_map[key]
+
+                # Handle Enum conversions for backward compatibility and robustness
+                if key == 'blending_mode':
+                    try:
+                        setattr(config_instance, key, ProcessingMode(value))
+                    except ValueError:
+                        print(f"Warning: Invalid blending_mode '{value}'. Defaulting to FIXED_FADE.")
+                        setattr(config_instance, key, ProcessingMode.FIXED_FADE)
+                    continue
+                elif key == 'weighted_falloff_type':
+                    try:
+                        setattr(config_instance, key, WeightingFalloff(value))
+                    except ValueError:
+                        print(f"Warning: Invalid weighted_falloff_type '{value}'. Defaulting to LINEAR.")
+                        setattr(config_instance, key, WeightingFalloff.LINEAR)
+                    continue
+
                 if key == 'xy_blend_pipeline':
                     pipeline_list = []
                     if isinstance(value, list):
@@ -172,6 +247,16 @@ class Config:
                                 filtered_op_data['lut_params'] = XYBlendOperation.from_dict_to_lut_params(filtered_op_data['lut_params'])
                             pipeline_list.append(XYBlendOperation(**filtered_op_data))
                     setattr(config_instance, key, pipeline_list)
+                elif key == 'roi_params':
+                    if isinstance(value, dict):
+                        roi_field_names = {f.name for f in fields(RoiParameters)}
+                        filtered_roi_data = {k: v for k, v in value.items() if k in roi_field_names}
+                        setattr(config_instance, key, RoiParameters(**filtered_roi_data))
+                elif key == 'anisotropic_params':
+                    if isinstance(value, dict):
+                        anisotropic_field_names = {f.name for f in fields(AnisotropicParams)}
+                        filtered_anisotropic_data = {k: v for k, v in value.items() if k in anisotropic_field_names}
+                        setattr(config_instance, key, AnisotropicParams(**filtered_anisotropic_data))
                 else:
                     if field_obj.type is bool and isinstance(value, str):
                         value = value.lower() in ('true', '1', 't', 'y')
@@ -204,8 +289,6 @@ class Config:
             print(f"Error loading config '{filepath}': {e}. Using default.")
             return cls()
 
-# --- Renaming old config fields for clarity ---
-# This ensures backward compatibility if an old config is loaded.
 def upgrade_config(cfg: Config):
     if hasattr(cfg, 'n_layers'):
         cfg.receding_layers = cfg.n_layers
@@ -217,7 +300,6 @@ def upgrade_config(cfg: Config):
         cfg.fixed_fade_distance_receding = cfg.fixed_fade_distance
         delattr(cfg, 'fixed_fade_distance')
 
-# Global instance of the configuration
 _CONFIG_FILE = "app_config.json"
 app_config = Config.load(_CONFIG_FILE)
-upgrade_config(app_config) # Apply upgrades for backward compatibility
+upgrade_config(app_config)
