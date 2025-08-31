@@ -15,356 +15,26 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-# ui_components.py (Final Touches)
+# ui_components.py
 
 import os
-import re
-import cv2
-import concurrent.futures
-import collections
-import numpy as np
-from typing import List
-import subprocess
-import datetime
 import shutil
-
+import numpy as np
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QProgressBar, QFileDialog, QMessageBox, QCheckBox,
     QTabWidget, QGroupBox, QRadioButton, QButtonGroup, QStackedWidget,
-    QGridLayout, QFrame
+    QGridLayout, QFrame, QComboBox
 )
-from PySide6.QtCore import QThread, Signal, Slot, Qt, QSettings
+from PySide6.QtCore import Slot, Qt, QSettings
 from PySide6.QtGui import QIntValidator, QDoubleValidator
 
-from config import app_config as config, Config, XYBlendOperation, LutParameters, DEFAULT_NUM_WORKERS, upgrade_config
-import processing_core as core
-import xy_blend_processor
-import lut_manager
+from config import (
+    app_config as config, Config, DEFAULT_NUM_WORKERS, upgrade_config,
+    ProcessingMode, WeightingFalloff
+)
 from pyside_xy_blend_tab import XYBlendTab
-
-class ImageProcessorThread(QThread):
-    """
-    Manages the image processing pipeline in a separate thread to keep the GUI responsive.
-    """
-    status_update = Signal(str)
-    progress_update = Signal(int)
-    error_signal = Signal(str)
-    finished_signal = Signal()
-
-    def __init__(self, app_config: Config, max_workers: int):
-        super().__init__()
-        self.app_config = app_config
-        self._is_running = True
-        self.max_workers = max_workers
-        self.run_timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        self.session_temp_folder = ""
-
-    def _run_uvtools_extraction(self) -> str:
-        """
-        Executes UVToolsCmd.exe to extract layers into a timestamped temp folder.
-        """
-        self.status_update.emit("Starting UVTools slice extraction...")
-        
-        self.session_temp_folder = os.path.join(self.app_config.uvtools_temp_folder, f"Voxel_Stack_Blender_{self.run_timestamp}")
-        input_folder = os.path.join(self.session_temp_folder, "Input")
-        output_folder = os.path.join(self.session_temp_folder, "Output")
-        
-        os.makedirs(input_folder, exist_ok=True)
-        os.makedirs(output_folder, exist_ok=True)
-
-        command = [
-            self.app_config.uvtools_path, "extract", self.app_config.uvtools_input_file,
-            input_folder, "--content", "Layers"
-        ]
-        self.status_update.emit(f"Running command: {' '.join(command)}")
-        
-        try:
-            creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-            process = subprocess.run(command, capture_output=True, text=True, creationflags=creation_flags)
-            print(f"UVToolsCmd.exe (extract) finished with exit code: {process.returncode}")
-            if process.returncode not in [0, 1]:
-                raise RuntimeError(f"UVTools exited with an error (code {process.returncode}):\n\n{process.stderr}")
-            self.status_update.emit("UVTools extraction completed.")
-            return input_folder
-        except Exception as e:
-            raise RuntimeError(f"UVTools extraction failed: {e}")
-
-    def _generate_uvtop_file(self, processed_images_folder: str) -> str:
-        """Generates the .uvtop XML file for repacking."""
-        self.status_update.emit("Generating UVTools operation file...")
-        
-        numeric_pattern = re.compile(r'(\d+)\.\w+$')
-        def get_numeric_part(filename):
-            match = numeric_pattern.search(filename)
-            return int(match.group(1)) if match else float('inf')
-            
-        processed_files = sorted(
-            [os.path.join(processed_images_folder, f) for f in os.listdir(processed_images_folder) if f.lower().endswith('.png')],
-            key=get_numeric_part
-        )
-
-        if not processed_files:
-            raise RuntimeError("No processed image files found to generate .uvtop file.")
-
-        xml_content = '<?xml version="1.0" encoding="utf-8" standalone="no"?>\n'
-        xml_content += '<OperationLayerImport xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">\n'
-        xml_content += '  <LayerRangeSelection>None</LayerRangeSelection>\n'
-        xml_content += '  <ImportType>Replace</ImportType>\n'
-        xml_content += '  <Files>\n'
-        for f_path in processed_files:
-            xml_content += '    <GenericFileRepresentation>\n'
-            xml_content += f'      <FilePath>{f_path}</FilePath>\n'
-            xml_content += '    </GenericFileRepresentation>\n'
-        xml_content += '  </Files>\n'
-        xml_content += '</OperationLayerImport>\n'
-
-        uvtop_filename = f"repack_operations_{self.run_timestamp}.uvtop"
-        uvtop_filepath = os.path.join(self.session_temp_folder, uvtop_filename)
-        
-        with open(uvtop_filepath, 'w', encoding='utf-8') as f:
-            f.write(xml_content)
-            
-        self.status_update.emit("Operation file generated.")
-        return uvtop_filepath
-
-    def _run_uvtools_repack(self, uvtop_filepath: str):
-        """Executes UVToolsCmd.exe to repack the processed layers."""
-        self.status_update.emit("Repacking slice file with processed layers...")
-
-        original_filename = os.path.basename(self.app_config.uvtools_input_file)
-        output_filename = f"Voxel_Blend_Processed_{self.run_timestamp}_{original_filename}"
-        
-        # NEW: Determine final output directory based on config
-        output_directory = ""
-        if self.app_config.uvtools_output_location == "input_folder":
-            output_directory = os.path.dirname(self.app_config.uvtools_input_file)
-        else: # Default to working_folder
-            output_directory = self.app_config.uvtools_temp_folder
-
-        final_output_path = os.path.join(output_directory, output_filename)
-
-        command = [
-            self.app_config.uvtools_path,
-            "run",
-            self.app_config.uvtools_input_file,
-            uvtop_filepath,
-            "--output",
-            final_output_path
-        ]
-        self.status_update.emit(f"Running command: {' '.join(command)}")
-
-        try:
-            creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-            process = subprocess.run(command, capture_output=True, text=True, creationflags=creation_flags)
-            print(f"UVToolsCmd.exe (run) finished with exit code: {process.returncode}")
-            if process.returncode not in [0, 1]:
-                raise RuntimeError(f"UVTools exited with an error (code {process.returncode}):\n\n{process.stderr}")
-            self.status_update.emit(f"Successfully created: {output_filename}")
-        except Exception as e:
-            raise RuntimeError(f"UVTools repacking failed: {e}")
-
-    @staticmethod
-    def _process_single_image_task(
-        current_image_filepath: str,
-        prior_binary_masks_snapshot: collections.deque,
-        processing_core_params: dict,
-        xy_blend_pipeline_ops: List[XYBlendOperation],
-        output_folder: str,
-        debug_save: bool
-    ) -> str:
-        """Processes a single image completely. This function runs in a worker thread."""
-        current_binary_image, original_image = core.load_image(current_image_filepath)
-        if current_binary_image is None:
-            raise RuntimeError(f"Could not load image: {current_image_filepath}")
-
-        debug_info = {'output_folder': output_folder, 'base_filename': os.path.splitext(os.path.basename(current_image_filepath))[0]} if debug_save else None
-        prior_white_combined_mask = core.find_prior_combined_white_mask(list(prior_binary_masks_snapshot))
-        
-        receding_gradient = core.calculate_receding_gradient_field(
-            current_binary_image, prior_white_combined_mask,
-            processing_core_params['use_fixed_fade_receding'],
-            processing_core_params['fixed_fade_distance_receding'],
-            debug_info=debug_info
-        )
-
-        output_image_from_core = core.merge_to_output(original_image, receding_gradient)
-        final_processed_image = xy_blend_processor.process_xy_pipeline(output_image_from_core, xy_blend_pipeline_ops)
-
-        output_filename = os.path.basename(current_image_filepath)
-        output_filepath = os.path.join(output_folder, output_filename)
-        cv2.imwrite(output_filepath, final_processed_image)
-        return output_filepath
-
-    def run(self):
-        """The main processing loop, orchestrating the full extract-process-repack workflow."""
-        self.status_update.emit("Processing started...")
-        
-        numeric_pattern = re.compile(r'(\d+)\.\w+$')
-        def get_numeric_part(filename):
-            match = numeric_pattern.search(filename)
-            return int(match.group(1)) if match else float('inf')
-
-        try:
-            input_path = ""
-            processing_output_path = ""
-
-            if self.app_config.input_mode == "uvtools":
-                input_path = self._run_uvtools_extraction()
-                processing_output_path = os.path.join(self.session_temp_folder, "Output")
-            else:
-                input_path = self.app_config.input_folder
-                processing_output_path = self.app_config.output_folder
-
-            all_image_filenames = sorted(
-                [f for f in os.listdir(input_path) if f.lower().endswith(('.png', '.bmp', '.tif', '.tiff'))],
-                key=get_numeric_part
-            )
-            
-            image_filenames_filtered = []
-            for f in all_image_filenames:
-                numeric_part = get_numeric_part(f)
-                if self.app_config.start_index is not None and numeric_part < self.app_config.start_index:
-                    continue
-                if self.app_config.stop_index is not None and numeric_part > self.app_config.stop_index:
-                    continue
-                image_filenames_filtered.append(f)
-
-            total_images = len(image_filenames_filtered)
-            if total_images == 0:
-                self.error_signal.emit("No images found in the specified folder or index range.")
-                return
-
-            prior_binary_masks_cache = collections.deque(maxlen=self.app_config.receding_layers)
-            
-            active_futures = set()
-            processed_count = 0
-            submitted_count = 0
-
-            filename_iterator = iter(image_filenames_filtered)
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                # 1. Prime the pump
-                for _ in range(self.max_workers):
-                    try:
-                        filename = next(filename_iterator)
-                        filepath = os.path.join(input_path, filename)
-                        
-                        current_binary_image_for_cache, _ = core.load_image(filepath)
-                        if current_binary_image_for_cache is None:
-                            self.status_update.emit(f"Skipping unloadable image: {filename}")
-                            continue 
-                        
-                        processing_core_params = {
-                            'use_fixed_fade_receding': self.app_config.use_fixed_fade_receding,
-                            'fixed_fade_distance_receding': self.app_config.fixed_fade_distance_receding,
-                        }
-                        
-                        future = executor.submit(
-                            ImageProcessorThread._process_single_image_task,
-                            filepath,
-                            collections.deque(prior_binary_masks_cache),
-                            processing_core_params,
-                            self.app_config.xy_blend_pipeline,
-                            processing_output_path,
-                            self.app_config.debug_save
-                        )
-                        active_futures.add(future)
-                        prior_binary_masks_cache.append(current_binary_image_for_cache)
-                        submitted_count += 1
-                        self.status_update.emit(f"Submitting {filename} ({submitted_count}/{total_images})")
-                    except StopIteration:
-                        break
-
-                # 2. Main processing loop
-                while active_futures:
-                    if not self._is_running:
-                        self.status_update.emit("Processing stopped by user.")
-                        break
-
-                    done, _ = concurrent.futures.wait(active_futures, return_when=concurrent.futures.FIRST_COMPLETED)
-
-                    for future in done:
-                        active_futures.remove(future)
-                        try:
-                            output_path = future.result()
-                            processed_count += 1
-                            self.status_update.emit(f"Completed: {os.path.basename(output_path)} ({processed_count}/{total_images})")
-                            self.progress_update.emit(int((processed_count / total_images) * 100))
-                        except Exception as exc:
-                            import traceback
-                            error_detail = f"An image processing task failed: {exc}\n{traceback.format_exc()}"
-                            self.error_signal.emit(error_detail)
-                            self._is_running = False
-                            break
-
-                    if not self._is_running:
-                        break
-
-                    # Submit new tasks
-                    try:
-                        filename = next(filename_iterator)
-                        filepath = os.path.join(input_path, filename)
-                        
-                        current_binary_image_for_cache, _ = core.load_image(filepath)
-                        if current_binary_image_for_cache is None:
-                            self.status_update.emit(f"Skipping unloadable image: {filename}")
-                            continue
-                        
-                        processing_core_params = {
-                            'use_fixed_fade_receding': self.app_config.use_fixed_fade_receding,
-                            'fixed_fade_distance_receding': self.app_config.fixed_fade_distance_receding,
-                        }
-
-                        future = executor.submit(
-                            ImageProcessorThread._process_single_image_task,
-                            filepath,
-                            collections.deque(prior_binary_masks_cache),
-                            processing_core_params,
-                            self.app_config.xy_blend_pipeline,
-                            processing_output_path,
-                            self.app_config.debug_save
-                        )
-                        active_futures.add(future)
-                        prior_binary_masks_cache.append(current_binary_image_for_cache)
-                        submitted_count += 1
-                        self.status_update.emit(f"Submitting {filename} ({submitted_count}/{total_images})")
-                    except StopIteration:
-                        pass
-                
-                if self._is_running and processed_count == total_images:
-                    self.progress_update.emit(100)
-            
-            self.status_update.emit("All image processing tasks completed.")
-
-            # --- UVTools Repack Step ---
-            if self.app_config.input_mode == "uvtools" and self._is_running:
-                uvtop_file = self._generate_uvtop_file(processing_output_path)
-                self._run_uvtools_repack(uvtop_file)
-
-        except Exception as e:
-            import traceback
-            error_info = f"Error in processing thread: {e}\n\n{traceback.format_exc()}"
-            self.error_signal.emit(error_info)
-        finally:
-            # --- Cleanup Step ---
-            if self.app_config.input_mode == "uvtools" and self.app_config.uvtools_delete_temp_on_completion:
-                if self.session_temp_folder and os.path.isdir(self.session_temp_folder):
-                    self.status_update.emit(f"Deleting temporary folder: {self.session_temp_folder}")
-                    try:
-                        shutil.rmtree(self.session_temp_folder)
-                        self.status_update.emit("Temporary files deleted.")
-                    except Exception as e:
-                        self.error_signal.emit(f"Could not delete temp folder: {e}")
-
-            if self._is_running:
-                self.status_update.emit("Processing complete!")
-            else:
-                self.status_update.emit("Processing stopped by user or error.")
-            self.finished_signal.emit()
-
-    def stop_processing(self):
-        self._is_running = False
+from processing_pipeline import ProcessingPipelineThread
 
 class ImageProcessorApp(QWidget):
     """The main application window, now with a restructured UI."""
@@ -451,13 +121,11 @@ class ImageProcessorApp(QWidget):
         self.uvtools_input_file_button = QPushButton("Browse...")
         uvtools_mode_layout.addWidget(self.uvtools_input_file_button, 2, 2)
         
-        # NEW: Horizontal Rule
         divider = QFrame()
         divider.setFrameShape(QFrame.HLine)
         divider.setFrameShadow(QFrame.Sunken)
         uvtools_mode_layout.addWidget(divider, 3, 0, 1, 3)
 
-        # NEW: Output Location Radios
         uvtools_mode_layout.addWidget(QLabel("Output Completed Slice file:"), 4, 0)
         self.uvtools_output_location_group = QButtonGroup(self)
         self.uvtools_output_working_radio = QRadioButton("To Working Folder")
@@ -468,9 +136,9 @@ class ImageProcessorApp(QWidget):
         uvtools_mode_layout.addWidget(self.uvtools_output_input_radio, 5, 1)
         self.uvtools_output_working_radio.setChecked(True)
 
-        output_note_label = QLabel("<i>Output file will be named \"Voxel_Blend_Processed_&lt;date-time&gt;_&lt;original-filename&gt;\"</i>")
-        output_note_label.setWordWrap(True)
-        uvtools_mode_layout.addWidget(output_note_label, 6, 1, 1, 2)
+        uvtools_mode_layout.addWidget(QLabel("Output File Prefix:"), 6, 0)
+        self.output_prefix_edit = QLineEdit("Voxel_Blend_Processed_")
+        uvtools_mode_layout.addWidget(self.output_prefix_edit, 6, 1, 1, 2)
         
         self.uvtools_cleanup_checkbox = QCheckBox("Delete Temporary Files on Completion")
         self.uvtools_cleanup_checkbox.setChecked(True)
@@ -482,35 +150,102 @@ class ImageProcessorApp(QWidget):
 
         # --- Stack Blending Section ---
         blending_group = QGroupBox("Stack Blending")
-        blending_layout = QGridLayout(blending_group)
-        
-        blending_layout.addWidget(QLabel("Receding Look Down Layers:"), 0, 0)
+        blending_layout = QVBoxLayout(blending_group)
+
+        blending_mode_layout = QHBoxLayout()
+        blending_mode_layout.addWidget(QLabel("Blending Mode:"))
+        self.blending_mode_combo = QComboBox()
+        self.blending_mode_combo.addItem("Enhanced EDT", ProcessingMode.ENHANCED_EDT)
+        self.blending_mode_combo.addItem("Fixed Fade", ProcessingMode.FIXED_FADE)
+        self.blending_mode_combo.addItem("ROI Mode (Slow)", ProcessingMode.ROI_FADE)
+        blending_mode_layout.addWidget(self.blending_mode_combo)
+        blending_mode_layout.addStretch(1)
+        blending_layout.addLayout(blending_mode_layout)
+
+        common_blending_layout = QGridLayout()
+        common_blending_layout.addWidget(QLabel("Receding Look Down Layers:"), 0, 0)
         self.receding_layers_edit = QLineEdit("3")
         self.receding_layers_edit.setValidator(QIntValidator(0, 100, self))
-        blending_layout.addWidget(self.receding_layers_edit, 0, 1)
-        
-        self.fixed_fade_receding_checkbox = QCheckBox("Use Fixed Fade Distance")
-        blending_layout.addWidget(self.fixed_fade_receding_checkbox, 0, 2)
+        common_blending_layout.addWidget(self.receding_layers_edit, 0, 1)
+
+        self.fade_dist_label = QLabel("Fade Distance (pixels):")
+        common_blending_layout.addWidget(self.fade_dist_label, 1, 0)
         self.fade_dist_receding_edit = QLineEdit("10.0")
         self.fade_dist_receding_edit.setValidator(QDoubleValidator(0.1, 1000.0, 2, self))
-        blending_layout.addWidget(self.fade_dist_receding_edit, 0, 3)
+        common_blending_layout.addWidget(self.fade_dist_receding_edit, 1, 1)
 
-        # Mocked up Overhang controls
-        blending_layout.addWidget(QLabel("Overhang Look Up Layers: (Disabled / WiP)"), 1, 0)
-        self.overhang_layers_edit = QLineEdit("0")
-        self.overhang_layers_edit.setEnabled(False)
-        blending_layout.addWidget(self.overhang_layers_edit, 1, 1)
-        
-        self.fixed_fade_overhang_checkbox = QCheckBox("Use Fixed Fade Distance (Disabled / WiP)")
-        self.fixed_fade_overhang_checkbox.setEnabled(False)
-        blending_layout.addWidget(self.fixed_fade_overhang_checkbox, 1, 2)
-        self.fade_dist_overhang_edit = QLineEdit("10.0")
-        self.fade_dist_overhang_edit.setEnabled(False)
-        blending_layout.addWidget(self.fade_dist_overhang_edit, 1, 3)
-        
+        common_blending_layout.setColumnStretch(2, 1)
+
+        # --- Anisotropic Correction ---
+        anisotropic_widget = QWidget()
+        anisotropic_layout = QHBoxLayout(anisotropic_widget)
+        anisotropic_layout.setContentsMargins(0, 0, 0, 0)
+        self.anisotropic_checkbox = QCheckBox("Enable Anisotropic Distance Correction")
+        anisotropic_layout.addWidget(self.anisotropic_checkbox)
+        anisotropic_layout.addWidget(QLabel("X Factor:"))
+        self.anisotropic_x_edit = QLineEdit("1.0")
+        self.anisotropic_x_edit.setValidator(QDoubleValidator(0.1, 10.0, 2, self))
+        self.anisotropic_x_edit.setFixedWidth(50)
+        anisotropic_layout.addWidget(self.anisotropic_x_edit)
+        anisotropic_layout.addWidget(QLabel("Y Factor:"))
+        self.anisotropic_y_edit = QLineEdit("1.0")
+        self.anisotropic_y_edit.setValidator(QDoubleValidator(0.1, 10.0, 2, self))
+        self.anisotropic_y_edit.setFixedWidth(50)
+        anisotropic_layout.addWidget(self.anisotropic_y_edit)
+        anisotropic_layout.addStretch(1)
+
+        # Add the new row of widgets to the grid layout
+        common_blending_layout.addWidget(anisotropic_widget, 2, 0, 1, 3)
+
+        blending_layout.addLayout(common_blending_layout)
+
+        # The stacked widget is no longer needed, but we still need the ROI-specific settings.
+        # We can show/hide them based on the combo box selection.
+        self.roi_settings_group = QGroupBox("ROI Mode Settings")
+        self.roi_settings_group.setVisible(False) # Hidden by default
+        roi_fade_layout = QVBoxLayout(self.roi_settings_group)
+
+        main_roi_layout = QGridLayout()
+        main_roi_layout.addWidget(QLabel("Min ROI Size (pixels):"), 0, 0)
+        self.roi_min_size_edit = QLineEdit("100")
+        self.roi_min_size_edit.setValidator(QIntValidator(1, 1000000, self))
+        main_roi_layout.addWidget(self.roi_min_size_edit, 0, 1)
+        main_roi_layout.setColumnStretch(2, 1)
+        roi_fade_layout.addLayout(main_roi_layout)
+
+        self.raft_support_group = QGroupBox("Raft & Support Handling")
+        self.raft_support_group.setCheckable(True)
+        raft_support_layout = QGridLayout(self.raft_support_group)
+        raft_support_layout.addWidget(QLabel("Raft Layers (from bottom):"), 0, 0)
+        self.raft_layer_count_edit = QLineEdit("5")
+        self.raft_layer_count_edit.setValidator(QIntValidator(0, 1000))
+        raft_support_layout.addWidget(self.raft_layer_count_edit, 0, 1)
+        raft_support_layout.addWidget(QLabel("Raft Min Size (pixels):"), 0, 2)
+        self.raft_min_size_edit = QLineEdit("10000")
+        self.raft_min_size_edit.setValidator(QIntValidator(0, 100000000))
+        raft_support_layout.addWidget(self.raft_min_size_edit, 0, 3)
+        raft_support_layout.addWidget(QLabel("Support Max Size (pixels):"), 1, 0)
+        self.support_max_size_edit = QLineEdit("500")
+        self.support_max_size_edit.setValidator(QIntValidator(0, 1000000))
+        raft_support_layout.addWidget(self.support_max_size_edit, 1, 1)
+        raft_support_layout.addWidget(QLabel("Max Support Layer:"), 1, 2)
+        self.support_max_layer_edit = QLineEdit("1000")
+        self.support_max_layer_edit.setValidator(QIntValidator(0, 100000))
+        raft_support_layout.addWidget(self.support_max_layer_edit, 1, 3)
+        raft_support_layout.addWidget(QLabel("Max Support Growth (%):"), 2, 0)
+        self.support_max_growth_edit = QLineEdit("150.0")
+        self.support_max_growth_edit.setValidator(QDoubleValidator(0.0, 10000.0, 1))
+        raft_support_layout.addWidget(self.support_max_growth_edit, 2, 1)
+        note_label = QLabel("<i>Note: Classified rafts/supports are ignored. Growth factor is used to reclassify supports as model.</i>")
+        note_label.setWordWrap(True)
+        raft_support_layout.addWidget(note_label, 3, 0, 1, 4)
+        roi_fade_layout.addWidget(self.raft_support_group)
+        roi_fade_layout.addStretch(1)
+
+        blending_layout.addWidget(self.roi_settings_group)
+
         main_processing_layout.addWidget(blending_group)
         
-        # --- General Settings Section ---
         general_group = QGroupBox("General")
         general_layout = QVBoxLayout(general_group)
         
@@ -524,6 +259,10 @@ class ImageProcessorApp(QWidget):
         thread_layout.addWidget(self.ram_estimate_label)
         thread_layout.addStretch(1)
         general_layout.addLayout(thread_layout)
+
+        self.numba_checkbox = QCheckBox("Enable Numba JIT Acceleration (Recommended)")
+        self.numba_checkbox.setToolTip("Uses a Just-In-Time compiler (Numba) for the Enhanced EDT calculation, which may be significantly faster. Requires the 'numba' package.")
+        general_layout.addWidget(self.numba_checkbox)
 
         self.debug_checkbox = QCheckBox("Save Intermediate Debug Images")
         general_layout.addWidget(self.debug_checkbox)
@@ -548,7 +287,7 @@ class ImageProcessorApp(QWidget):
         self.progress_bar = QProgressBar()
         main_layout.addWidget(self.progress_bar)
         self.status_label = QLabel("Status: Ready")
-        self.status_label.setWordWrap(True) # NEW: Enable word wrap
+        self.status_label.setWordWrap(True)
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(self.status_label)
 
@@ -559,6 +298,7 @@ class ImageProcessorApp(QWidget):
         self.uvtools_temp_folder_button.clicked.connect(lambda: self.browse_folder(self.uvtools_temp_folder_edit))
         self.uvtools_input_file_button.clicked.connect(lambda: self.browse_file(self.uvtools_input_file_edit, "Select Input Slice File"))
         self.input_mode_group.idClicked.connect(self.on_input_mode_changed)
+        self.blending_mode_combo.currentIndexChanged.connect(self.on_blending_mode_changed)
         self.save_config_button.clicked.connect(self._save_config_to_file)
         self.load_config_button.clicked.connect(self._load_config_from_file)
         self.start_stop_button.clicked.connect(self.toggle_processing)
@@ -572,6 +312,21 @@ class ImageProcessorApp(QWidget):
 
     def on_input_mode_changed(self, stack_index):
         self.io_stacked_widget.setCurrentIndex(stack_index)
+
+    def on_blending_mode_changed(self, index):
+        selected_mode = self.blending_mode_combo.itemData(index)
+
+        # Show/hide ROI settings
+        if selected_mode == ProcessingMode.ROI_FADE:
+            self.roi_settings_group.setVisible(True)
+        else:
+            self.roi_settings_group.setVisible(False)
+
+        # Update fade distance label text
+        if selected_mode == ProcessingMode.ENHANCED_EDT:
+            self.fade_dist_label.setText("Max Fade (pixels):")
+        else:
+            self.fade_dist_label.setText("Fade Distance (pixels):")
 
     def browse_folder(self, line_edit):
         folder = QFileDialog.getExistingDirectory(self, "Select Folder", line_edit.text())
@@ -596,16 +351,33 @@ class ImageProcessorApp(QWidget):
         self.uvtools_path_edit.setText(config.uvtools_path)
         self.uvtools_temp_folder_edit.setText(config.uvtools_temp_folder)
         self.uvtools_input_file_edit.setText(config.uvtools_input_file)
+        self.output_prefix_edit.setText(config.output_file_prefix)
         self.uvtools_cleanup_checkbox.setChecked(config.uvtools_delete_temp_on_completion)
         self.uvtools_output_working_radio.setChecked(config.uvtools_output_location == "working_folder")
         self.uvtools_output_input_radio.setChecked(config.uvtools_output_location == "input_folder")
         self.receding_layers_edit.setText(str(config.receding_layers))
-        self.fixed_fade_receding_checkbox.setChecked(config.use_fixed_fade_receding)
         self.fade_dist_receding_edit.setText(str(config.fixed_fade_distance_receding))
-        self.overhang_layers_edit.setText(str(config.overhang_layers))
-        self.fixed_fade_overhang_checkbox.setChecked(config.use_fixed_fade_overhang)
-        self.fade_dist_overhang_edit.setText(str(config.fixed_fade_distance_overhang))
+        self.anisotropic_checkbox.setChecked(config.anisotropic_params.enabled)
+        self.anisotropic_x_edit.setText(str(config.anisotropic_params.x_factor))
+        self.anisotropic_y_edit.setText(str(config.anisotropic_params.y_factor))
+
+        # --- Blending Mode Loading ---
+        index = self.blending_mode_combo.findData(config.blending_mode)
+        self.blending_mode_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.on_blending_mode_changed(self.blending_mode_combo.currentIndex())
+
+        # --- ROI Settings ---
+        self.roi_min_size_edit.setText(str(config.roi_params.min_size))
+        self.raft_support_group.setChecked(config.roi_params.enable_raft_support_handling)
+        self.raft_layer_count_edit.setText(str(config.roi_params.raft_layer_count))
+        self.raft_min_size_edit.setText(str(config.roi_params.raft_min_size))
+        self.support_max_size_edit.setText(str(config.roi_params.support_max_size))
+        self.support_max_layer_edit.setText(str(config.roi_params.support_max_layer))
+        self.support_max_growth_edit.setText(f"{(config.roi_params.support_max_growth - 1.0) * 100.0:.1f}")
+
+        # --- General Settings ---
         self.thread_count_edit.setText(str(config.thread_count))
+        self.numba_checkbox.setChecked(config.use_numba_jit)
         self.debug_checkbox.setChecked(config.debug_save)
         
         self.xy_blend_tab.apply_settings(config)
@@ -623,15 +395,58 @@ class ImageProcessorApp(QWidget):
         config.uvtools_path = self.uvtools_path_edit.text()
         config.uvtools_temp_folder = self.uvtools_temp_folder_edit.text()
         config.uvtools_input_file = self.uvtools_input_file_edit.text()
+        config.output_file_prefix = self.output_prefix_edit.text()
         config.uvtools_delete_temp_on_completion = self.uvtools_cleanup_checkbox.isChecked()
         config.uvtools_output_location = "input_folder" if self.uvtools_output_input_radio.isChecked() else "working_folder"
+
+        config.blending_mode = self.blending_mode_combo.currentData()
+
+        try:
+            config.roi_params.min_size = int(self.roi_min_size_edit.text())
+        except ValueError:
+            config.roi_params.min_size = 100
+
+        config.roi_params.enable_raft_support_handling = self.raft_support_group.isChecked()
+        try:
+            config.roi_params.raft_layer_count = int(self.raft_layer_count_edit.text())
+        except ValueError:
+            config.roi_params.raft_layer_count = 5
+        try:
+            config.roi_params.raft_min_size = int(self.raft_min_size_edit.text())
+        except ValueError:
+            config.roi_params.raft_min_size = 10000
+        try:
+            config.roi_params.support_max_size = int(self.support_max_size_edit.text())
+        except ValueError:
+            config.roi_params.support_max_size = 500
+        try:
+            config.roi_params.support_max_layer = int(self.support_max_layer_edit.text())
+        except ValueError:
+            config.roi_params.support_max_layer = 1000
+        try:
+            config.roi_params.support_max_growth = (float(self.support_max_growth_edit.text().replace(',', '.')) / 100.0) + 1.0
+        except ValueError:
+            config.roi_params.support_max_growth = 2.5
+
         try: config.receding_layers = int(self.receding_layers_edit.text())
         except ValueError: config.receding_layers = 3
-        config.use_fixed_fade_receding = self.fixed_fade_receding_checkbox.isChecked()
+
+        # The checkbox for use_fixed_fade_receding is removed, so we can consider it always true or remove it from config.
+        # For now, we just don't set it from the UI. The core logic will rely on the distance value.
+        config.use_fixed_fade_receding = True
+
         try: config.fixed_fade_distance_receding = float(self.fade_dist_receding_edit.text().replace(',', '.'))
         except ValueError: config.fixed_fade_distance_receding = 10.0
+
+        config.anisotropic_params.enabled = self.anisotropic_checkbox.isChecked()
+        try: config.anisotropic_params.x_factor = float(self.anisotropic_x_edit.text().replace(',', '.'))
+        except ValueError: config.anisotropic_params.x_factor = 1.0
+        try: config.anisotropic_params.y_factor = float(self.anisotropic_y_edit.text().replace(',', '.'))
+        except ValueError: config.anisotropic_params.y_factor = 1.0
+
         try: config.thread_count = int(self.thread_count_edit.text())
         except ValueError: config.thread_count = DEFAULT_NUM_WORKERS
+        config.use_numba_jit = self.numba_checkbox.isChecked()
         config.debug_save = self.debug_checkbox.isChecked()
         
         config.save("app_config.json")
@@ -693,7 +508,7 @@ class ImageProcessorApp(QWidget):
                     raise ValueError("Input Slice File is not valid.")
             
             self.set_ui_enabled(False)
-            self.processor_thread = ImageProcessorThread(app_config=config, max_workers=config.thread_count)
+            self.processor_thread = ProcessingPipelineThread(app_config=config, max_workers=config.thread_count)
             self.processor_thread.status_update.connect(self.update_status)
             self.processor_thread.progress_update.connect(self.progress_bar.setValue)
             self.processor_thread.error_signal.connect(self.show_error)
