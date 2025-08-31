@@ -104,6 +104,7 @@ class XYBlendOperation:
     resize_width: Optional[int] = None
     resize_height: Optional[int] = None
     resample_mode: str = "LANCZOS4"
+    anisotropic_correction_enabled: bool = False
     lut_params: LutParameters = field(default_factory=LutParameters)
 
     def __post_init__(self):
@@ -157,6 +158,10 @@ class AnisotropicParams:
     x_factor: float = 1.0
     y_factor: float = 1.0
 
+@dataclass
+class AnisotropicFlags:
+    """Flags for enabling anisotropic correction on specific operations."""
+    edt_enabled: bool = False
 
 @dataclass
 class Config:
@@ -184,6 +189,10 @@ class Config:
     use_fixed_fade_receding: bool = False
     fixed_fade_distance_receding: float = 10.0
     anisotropic_params: AnisotropicParams = field(default_factory=AnisotropicParams)
+    anisotropic_flags: AnisotropicFlags = field(default_factory=AnisotropicFlags)
+    voxel_dim_x: int = 25
+    voxel_dim_y: int = 25
+    voxel_dim_z: int = 50
     
     # --- Weighted Stack Mode Settings ---
     weighted_falloff_type: WeightingFalloff = WeightingFalloff.LINEAR
@@ -202,6 +211,8 @@ class Config:
     thread_count: int = DEFAULT_NUM_WORKERS
     use_numba_jit: bool = False
     debug_save: bool = False
+    use_zarr_pipeline: bool = False
+    save_zarr_to_disk: bool = False
     xy_blend_pipeline: List[XYBlendOperation] = field(default_factory=lambda: [XYBlendOperation("none")])
 
     def to_dict(self) -> dict:
@@ -257,6 +268,11 @@ class Config:
                         anisotropic_field_names = {f.name for f in fields(AnisotropicParams)}
                         filtered_anisotropic_data = {k: v for k, v in value.items() if k in anisotropic_field_names}
                         setattr(config_instance, key, AnisotropicParams(**filtered_anisotropic_data))
+                elif key == 'anisotropic_flags':
+                    if isinstance(value, dict):
+                        anisotropic_flags_field_names = {f.name for f in fields(AnisotropicFlags)}
+                        filtered_anisotropic_flags_data = {k: v for k, v in value.items() if k in anisotropic_flags_field_names}
+                        setattr(config_instance, key, AnisotropicFlags(**filtered_anisotropic_flags_data))
                 else:
                     if field_obj.type is bool and isinstance(value, str):
                         value = value.lower() in ('true', '1', 't', 'y')

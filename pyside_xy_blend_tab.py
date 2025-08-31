@@ -117,13 +117,128 @@ class XYBlendTab(QWidget):
 
     def _create_parameter_widgets(self):
         """Creates all the parameter widgets for the stacked widget."""
-        self.none_params_widget = QWidget(); layout = QVBoxLayout(self.none_params_widget); layout.addWidget(QLabel("No parameters for 'none' operation.")); layout.addStretch(1); self.op_params_stacked_widget.addWidget(self.none_params_widget)
-        self.gaussian_params_widget = QWidget(); layout = QVBoxLayout(self.gaussian_params_widget); ksize_layout = QHBoxLayout(); ksize_layout.addWidget(QLabel("Kernel Size (X, Y):")); self.gaussian_ksize_x_edit = QLineEdit(); self.gaussian_ksize_x_edit.setFixedWidth(60); self.gaussian_ksize_x_edit.setValidator(QIntValidator(1, 99, self)); ksize_layout.addWidget(self.gaussian_ksize_x_edit); self.gaussian_ksize_y_edit = QLineEdit(); self.gaussian_ksize_y_edit.setFixedWidth(60); self.gaussian_ksize_y_edit.setValidator(QIntValidator(1, 99, self)); ksize_layout.addWidget(self.gaussian_ksize_y_edit); ksize_layout.addStretch(1); layout.addLayout(ksize_layout); sigma_layout = QHBoxLayout(); sigma_layout.addWidget(QLabel("Sigma (X, Y):")); self.gaussian_sigma_x_edit = QLineEdit(); self.gaussian_sigma_x_edit.setFixedWidth(60); self.gaussian_sigma_x_edit.setValidator(QDoubleValidator(0.0, 100.0, 2, self)); sigma_layout.addWidget(self.gaussian_sigma_x_edit); self.gaussian_sigma_y_edit = QLineEdit(); self.gaussian_sigma_y_edit.setFixedWidth(60); self.gaussian_sigma_y_edit.setValidator(QDoubleValidator(0.0, 100.0, 2, self)); sigma_layout.addWidget(self.gaussian_sigma_y_edit); sigma_layout.addStretch(1); layout.addLayout(sigma_layout); layout.addStretch(1); self.op_params_stacked_widget.addWidget(self.gaussian_params_widget)
-        self.bilateral_params_widget = QWidget(); layout = QVBoxLayout(self.bilateral_params_widget); layout.addWidget(QLabel("Diameter:")); self.bilateral_d_edit = QLineEdit(); self.bilateral_d_edit.setFixedWidth(60); self.bilateral_d_edit.setValidator(QIntValidator(1, 99, self)); layout.addWidget(self.bilateral_d_edit); layout.addWidget(QLabel("Sigma Color:")); self.bilateral_sigma_color_edit = QLineEdit(); self.bilateral_sigma_color_edit.setFixedWidth(60); self.bilateral_sigma_color_edit.setValidator(QDoubleValidator(0.0, 255.0, 2, self)); layout.addWidget(self.bilateral_sigma_color_edit); layout.addWidget(QLabel("Sigma Space:")); self.bilateral_sigma_space_edit = QLineEdit(); self.bilateral_sigma_space_edit.setFixedWidth(60); self.bilateral_sigma_space_edit.setValidator(QDoubleValidator(0.0, 255.0, 2, self)); layout.addWidget(self.bilateral_sigma_space_edit); layout.addStretch(1); self.op_params_stacked_widget.addWidget(self.bilateral_params_widget)
-        self.median_params_widget = QWidget(); layout = QVBoxLayout(self.median_params_widget); layout.addWidget(QLabel("Kernel Size:")); self.median_ksize_edit = QLineEdit(); self.median_ksize_edit.setFixedWidth(60); self.median_ksize_edit.setValidator(QIntValidator(1, 99, self)); layout.addWidget(self.median_ksize_edit); layout.addStretch(1); self.op_params_stacked_widget.addWidget(self.median_params_widget)
-        self.unsharp_params_widget = QWidget(); layout = QVBoxLayout(self.unsharp_params_widget); layout.addWidget(QLabel("Amount:")); self.unsharp_amount_edit = QLineEdit(); self.unsharp_amount_edit.setFixedWidth(60); self.unsharp_amount_edit.setValidator(QDoubleValidator(0.0, 5.0, 2, self)); layout.addWidget(self.unsharp_amount_edit); layout.addWidget(QLabel("Threshold:")); self.unsharp_threshold_edit = QLineEdit(); self.unsharp_threshold_edit.setFixedWidth(60); self.unsharp_threshold_edit.setValidator(QIntValidator(0, 255, self)); layout.addWidget(self.unsharp_threshold_edit); layout.addWidget(QLabel("Internal Blur KSize:")); self.unsharp_blur_ksize_edit = QLineEdit(); self.unsharp_blur_ksize_edit.setFixedWidth(60); self.unsharp_blur_ksize_edit.setValidator(QIntValidator(1, 99, self)); layout.addWidget(self.unsharp_blur_ksize_edit); layout.addWidget(QLabel("Internal Blur Sigma:")); self.unsharp_blur_sigma_edit = QLineEdit(); self.unsharp_blur_sigma_edit.setFixedWidth(60); self.unsharp_blur_sigma_edit.setValidator(QDoubleValidator(0.0, 100.0, 2, self)); layout.addWidget(self.unsharp_blur_sigma_edit); layout.addStretch(1); self.op_params_stacked_widget.addWidget(self.unsharp_params_widget)
-        self.resize_params_widget = QWidget(); layout = QVBoxLayout(self.resize_params_widget); layout.addWidget(QLabel("Width (px, 0 for auto):")); self.resize_width_edit = QLineEdit(); self.resize_width_edit.setFixedWidth(80); self.resize_width_edit.setValidator(QIntValidator(0, 9999, self)); layout.addWidget(self.resize_width_edit); layout.addWidget(QLabel("Height (px, 0 for auto):")); self.resize_height_edit = QLineEdit(); self.resize_height_edit.setFixedWidth(80); self.resize_height_edit.setValidator(QIntValidator(0, 9999, self)); layout.addWidget(self.resize_height_edit); layout.addWidget(QLabel("Resampling Mode:")); self.resample_mode_combo = QComboBox(); self.resample_mode_combo.addItems(["NEAREST", "BILINEAR", "BICUBIC", "LANCZOS4", "AREA"]); layout.addWidget(self.resample_mode_combo); layout.addStretch(1); self.op_params_stacked_widget.addWidget(self.resize_params_widget)
-        self.apply_lut_widget = LutEditorWidget(self); self.op_params_stacked_widget.addWidget(self.apply_lut_widget)
+        # --- None ---
+        self.none_params_widget = QWidget()
+        layout = QVBoxLayout(self.none_params_widget)
+        layout.addWidget(QLabel("No parameters for 'none' operation."))
+        layout.addStretch(1)
+        self.op_params_stacked_widget.addWidget(self.none_params_widget)
+
+        # --- Gaussian Blur ---
+        self.gaussian_params_widget = QWidget()
+        layout = QVBoxLayout(self.gaussian_params_widget)
+        ksize_layout = QHBoxLayout()
+        ksize_layout.addWidget(QLabel("Kernel Size (X, Y):"))
+        self.gaussian_ksize_x_edit = QLineEdit()
+        self.gaussian_ksize_x_edit.setFixedWidth(60)
+        self.gaussian_ksize_x_edit.setValidator(QIntValidator(1, 99, self))
+        ksize_layout.addWidget(self.gaussian_ksize_x_edit)
+        self.gaussian_ksize_y_edit = QLineEdit()
+        self.gaussian_ksize_y_edit.setFixedWidth(60)
+        self.gaussian_ksize_y_edit.setValidator(QIntValidator(1, 99, self))
+        ksize_layout.addWidget(self.gaussian_ksize_y_edit)
+        ksize_layout.addStretch(1)
+        layout.addLayout(ksize_layout)
+        sigma_layout = QHBoxLayout()
+        sigma_layout.addWidget(QLabel("Sigma (X, Y):"))
+        self.gaussian_sigma_x_edit = QLineEdit()
+        self.gaussian_sigma_x_edit.setFixedWidth(60)
+        self.gaussian_sigma_x_edit.setValidator(QDoubleValidator(0.0, 100.0, 2, self))
+        sigma_layout.addWidget(self.gaussian_sigma_x_edit)
+        self.gaussian_sigma_y_edit = QLineEdit()
+        self.gaussian_sigma_y_edit.setFixedWidth(60)
+        self.gaussian_sigma_y_edit.setValidator(QDoubleValidator(0.0, 100.0, 2, self))
+        sigma_layout.addWidget(self.gaussian_sigma_y_edit)
+        sigma_layout.addStretch(1)
+        layout.addLayout(sigma_layout)
+        self.gaussian_anisotropic_checkbox = QCheckBox("Enable Anisotropic Correction")
+        layout.addWidget(self.gaussian_anisotropic_checkbox)
+        layout.addStretch(1)
+        self.op_params_stacked_widget.addWidget(self.gaussian_params_widget)
+
+        # --- Bilateral Filter ---
+        self.bilateral_params_widget = QWidget()
+        layout = QVBoxLayout(self.bilateral_params_widget)
+        layout.addWidget(QLabel("Diameter:"))
+        self.bilateral_d_edit = QLineEdit()
+        self.bilateral_d_edit.setFixedWidth(60)
+        self.bilateral_d_edit.setValidator(QIntValidator(1, 99, self))
+        layout.addWidget(self.bilateral_d_edit)
+        layout.addWidget(QLabel("Sigma Color:"))
+        self.bilateral_sigma_color_edit = QLineEdit()
+        self.bilateral_sigma_color_edit.setFixedWidth(60)
+        self.bilateral_sigma_color_edit.setValidator(QDoubleValidator(0.0, 255.0, 2, self))
+        layout.addWidget(self.bilateral_sigma_color_edit)
+        layout.addWidget(QLabel("Sigma Space:"))
+        self.bilateral_sigma_space_edit = QLineEdit()
+        self.bilateral_sigma_space_edit.setFixedWidth(60)
+        self.bilateral_sigma_space_edit.setValidator(QDoubleValidator(0.0, 255.0, 2, self))
+        layout.addWidget(self.bilateral_sigma_space_edit)
+        self.bilateral_anisotropic_checkbox = QCheckBox("Enable Anisotropic Correction")
+        layout.addWidget(self.bilateral_anisotropic_checkbox)
+        layout.addStretch(1)
+        self.op_params_stacked_widget.addWidget(self.bilateral_params_widget)
+
+        # --- Median Blur ---
+        self.median_params_widget = QWidget()
+        layout = QVBoxLayout(self.median_params_widget)
+        layout.addWidget(QLabel("Kernel Size:"))
+        self.median_ksize_edit = QLineEdit()
+        self.median_ksize_edit.setFixedWidth(60)
+        self.median_ksize_edit.setValidator(QIntValidator(1, 99, self))
+        layout.addWidget(self.median_ksize_edit)
+        layout.addStretch(1)
+        self.op_params_stacked_widget.addWidget(self.median_params_widget)
+
+        # --- Unsharp Mask ---
+        self.unsharp_params_widget = QWidget()
+        layout = QVBoxLayout(self.unsharp_params_widget)
+        layout.addWidget(QLabel("Amount:"))
+        self.unsharp_amount_edit = QLineEdit()
+        self.unsharp_amount_edit.setFixedWidth(60)
+        self.unsharp_amount_edit.setValidator(QDoubleValidator(0.0, 5.0, 2, self))
+        layout.addWidget(self.unsharp_amount_edit)
+        layout.addWidget(QLabel("Threshold:"))
+        self.unsharp_threshold_edit = QLineEdit()
+        self.unsharp_threshold_edit.setFixedWidth(60)
+        self.unsharp_threshold_edit.setValidator(QIntValidator(0, 255, self))
+        layout.addWidget(self.unsharp_threshold_edit)
+        layout.addWidget(QLabel("Internal Blur KSize:"))
+        self.unsharp_blur_ksize_edit = QLineEdit()
+        self.unsharp_blur_ksize_edit.setFixedWidth(60)
+        self.unsharp_blur_ksize_edit.setValidator(QIntValidator(1, 99, self))
+        layout.addWidget(self.unsharp_blur_ksize_edit)
+        layout.addWidget(QLabel("Internal Blur Sigma:"))
+        self.unsharp_blur_sigma_edit = QLineEdit()
+        self.unsharp_blur_sigma_edit.setFixedWidth(60)
+        self.unsharp_blur_sigma_edit.setValidator(QDoubleValidator(0.0, 100.0, 2, self))
+        layout.addWidget(self.unsharp_blur_sigma_edit)
+        layout.addStretch(1)
+        self.op_params_stacked_widget.addWidget(self.unsharp_params_widget)
+
+        # --- Resize ---
+        self.resize_params_widget = QWidget()
+        layout = QVBoxLayout(self.resize_params_widget)
+        layout.addWidget(QLabel("Width (px, 0 for auto):"))
+        self.resize_width_edit = QLineEdit()
+        self.resize_width_edit.setFixedWidth(80)
+        self.resize_width_edit.setValidator(QIntValidator(0, 9999, self))
+        layout.addWidget(self.resize_width_edit)
+        layout.addWidget(QLabel("Height (px, 0 for auto):"))
+        self.resize_height_edit = QLineEdit()
+        self.resize_height_edit.setFixedWidth(80)
+        self.resize_height_edit.setValidator(QIntValidator(0, 9999, self))
+        layout.addWidget(self.resize_height_edit)
+        layout.addWidget(QLabel("Resampling Mode:"))
+        self.resample_mode_combo = QComboBox()
+        self.resample_mode_combo.addItems(["NEAREST", "BILINEAR", "BICUBIC", "LANCZOS4", "AREA"])
+        layout.addWidget(self.resample_mode_combo)
+        layout.addStretch(1)
+        self.op_params_stacked_widget.addWidget(self.resize_params_widget)
+
+        # --- Apply LUT ---
+        self.apply_lut_widget = LutEditorWidget(self)
+        self.op_params_stacked_widget.addWidget(self.apply_lut_widget)
 
     def _connect_signals(self):
         self.ops_list_widget.currentRowChanged.connect(self._update_selected_operation_details)
@@ -151,6 +266,9 @@ class XYBlendTab(QWidget):
         self.resize_width_edit.editingFinished.connect(lambda: self._update_param_in_config(self.resize_width_edit, "resize_width", int, allow_none_if_zero=True))
         self.resize_height_edit.editingFinished.connect(lambda: self._update_param_in_config(self.resize_height_edit, "resize_height", int, allow_none_if_zero=True))
         self.resample_mode_combo.currentTextChanged.connect(lambda text: self._update_param_in_config(self.resample_mode_combo, "resample_mode", str))
+
+        self.gaussian_anisotropic_checkbox.toggled.connect(lambda checked: self._update_anisotropic_flag_in_config(checked))
+        self.bilateral_anisotropic_checkbox.toggled.connect(lambda checked: self._update_anisotropic_flag_in_config(checked))
 
         self.apply_lut_widget.lut_params_changed.connect(self._on_lut_params_changed)
         self.apply_lut_widget.toggle_table_visibility_requested.connect(self._toggle_lut_table_panel)
@@ -221,8 +339,10 @@ class XYBlendTab(QWidget):
         self.gaussian_ksize_y_edit.setText(str(op.gaussian_ksize_y))
         self.gaussian_sigma_x_edit.setText(str(op.gaussian_sigma_x))
         self.gaussian_sigma_y_edit.setText(str(op.gaussian_sigma_y))
+        self.gaussian_anisotropic_checkbox.setChecked(op.anisotropic_correction_enabled)
         self.bilateral_d_edit.setText(str(op.bilateral_d))
         self.bilateral_sigma_color_edit.setText(str(op.bilateral_sigma_color))
+        self.bilateral_anisotropic_checkbox.setChecked(op.anisotropic_correction_enabled)
         self.bilateral_sigma_space_edit.setText(str(op.bilateral_sigma_space))
         self.median_ksize_edit.setText(str(op.median_ksize))
         self.unsharp_amount_edit.setText(str(op.unsharp_amount))
@@ -258,6 +378,13 @@ class XYBlendTab(QWidget):
             return
         
         self._populate_params_widgets(selected_op)
+
+    def _update_anisotropic_flag_in_config(self, checked: bool):
+        current_row = self.ops_list_widget.currentRow()
+        if not (0 <= current_row < len(self.config.xy_blend_pipeline)): return
+
+        selected_op = self.config.xy_blend_pipeline[current_row]
+        selected_op.anisotropic_correction_enabled = checked
 
     def _add_operation(self):
         self.config.xy_blend_pipeline.append(XYBlendOperation(type="none"))
