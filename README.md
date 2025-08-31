@@ -8,8 +8,17 @@ The Python source here was primarily composed working with LLMs / Generative AI 
 
 Performance is not too bad in Python thanks to Numpy being C under the covers, but if someone would like to port the functionality to native UVTools C# scripting, I would be happy to help.
 
-### Recent Results (Aug 5th Update)
+### Updates
 
+**(August 31)**
+ - Added a new Enhanced EDT mode.  This will use the distance in each area for the gradient fade.  Similar to an ROI mode where we make the gradient fit the size of the difference.  Best results setting the max to 40-64 pixels.
+ - Added Numba JIT compiler for a significant performance increase.
+ - Added LUTs which are working with current exposure settings with Siraya Tech Fast ABS Navy Grey and Elegoo Space Grey Standard.  The Siraya Tech LUT also works reasonably well with Sunlu / Jayo ABS-like Grey.
+ - Keep in mind all LUTs are extremely exposure dependent.  I need to make a test print tool towards a closed loop LUT generation and adjustment path. 
+ - Fixed an issue where the Spline LUT generation did not apply.
+ - Additional comparison images: https://imgur.com/a/voxel-stack-blender-BYZ71gG
+
+**(Aug 5th )**
 ![Heads Up Comparison CB Blur 6 vs VBlend Preset - Gale - HSBase - LD4-40px-upShiftedExp(LUT)-Bilateral-PiecewiseLUT](https://github.com/user-attachments/assets/7b0585ce-82d5-4984-865a-40432950c26c)
 
  - Excellent results as seen above with just a couple tweaks to the processing parameters.  Takes around 3-7 minutes to process on a higher end PC depending on how many cores you toss at it including UVTools extraction and repackaging of slice file. 
