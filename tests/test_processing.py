@@ -194,3 +194,71 @@ def test_anisotropic_correction(base_config):
     # Check that some gradient exists
     assert val_x > 0
     assert val_y > 0
+
+def test_sparse_vs_sliding_window_equivalence(tmp_path, base_config):
+    """
+    Tests that the output of the sparse array mode is identical to the
+    sliding window mode for a simple case.
+    """
+    # 1. Setup: Create dummy images and config
+    input_dir = tmp_path / "input"
+    output_sparse_dir = tmp_path / "output_sparse"
+    output_sliding_dir = tmp_path / "output_sliding"
+    input_dir.mkdir()
+    output_sparse_dir.mkdir()
+    output_sliding_dir.mkdir()
+
+    # Create 5 simple images
+    image_paths = []
+    for i in range(5):
+        img = np.zeros((50, 50), dtype=np.uint8)
+        # Make a white square that moves
+        cv2.rectangle(img, (10 + i, 10), (20 + i, 20), 255, -1)
+        filename = f"test_{i}.png"
+        filepath = input_dir / filename
+        cv2.imwrite(str(filepath), img)
+        image_paths.append(str(filepath))
+
+    # Import the pipeline here to avoid circular import issues at top level
+    from processing_pipeline import ProcessingPipelineThread
+
+    # 2. Run Sparse Mode
+    cfg_sparse = base_config
+    cfg_sparse.input_folder = str(input_dir)
+    cfg_sparse.output_folder = str(output_sparse_dir)
+    cfg_sparse.use_sparse_array = True
+    cfg_sparse.blending_mode = ProcessingMode.ENHANCED_EDT
+    cfg_sparse.receding_layers = 3
+    cfg_sparse.use_numba_jit = True # Test with Numba on
+
+    pipeline_sparse = ProcessingPipelineThread(app_config=cfg_sparse, max_workers=1)
+    pipeline_sparse.run() # Run in the same thread for testing simplicity
+
+    # 3. Run Sliding Window Mode
+    cfg_sliding = base_config
+    cfg_sliding.input_folder = str(input_dir)
+    cfg_sliding.output_folder = str(output_sliding_dir)
+    cfg_sliding.use_sparse_array = False # The only difference
+    cfg_sliding.blending_mode = ProcessingMode.ENHANCED_EDT
+    cfg_sliding.receding_layers = 3
+    cfg_sliding.use_numba_jit = True
+
+    pipeline_sliding = ProcessingPipelineThread(app_config=cfg_sliding, max_workers=1)
+    pipeline_sliding.run()
+
+    # 4. Compare results
+    sparse_files = sorted(os.listdir(output_sparse_dir))
+    sliding_files = sorted(os.listdir(output_sliding_dir))
+
+    assert len(sparse_files) > 0, "Sparse mode produced no output files."
+    assert sparse_files == sliding_files, "Output filenames do not match between modes."
+
+    for filename in sparse_files:
+        img_sparse = cv2.imread(str(output_sparse_dir / filename), cv2.IMREAD_GRAYSCALE)
+        img_sliding = cv2.imread(str(output_sliding_dir / filename), cv2.IMREAD_GRAYSCALE)
+
+        assert img_sparse is not None
+        assert img_sliding is not None
+
+        diff = cv2.absdiff(img_sparse, img_sliding)
+        assert np.sum(diff) == 0, f"Mismatch found in file {filename}"
