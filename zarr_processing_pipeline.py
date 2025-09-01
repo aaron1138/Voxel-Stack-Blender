@@ -4,6 +4,7 @@ import cv2
 import zarr
 import numpy as np
 import shutil
+import concurrent.futures
 from PySide6.QtCore import QThread, Signal
 
 from config import Config
@@ -63,6 +64,15 @@ class ZarrProcessingPipelineThread(QThread):
         )
         self.status_update.emit(f"Successfully created: {os.path.basename(final_output_path)}")
 
+    def _load_slice(self, args):
+        """Helper function for parallel loading. Returns 1 on success."""
+        i, filename, input_path, zarr_array = args
+        filepath = os.path.join(input_path, filename)
+        img = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
+        # In case of a missing/corrupt image, fill the slice with black
+        zarr_array[i] = img if img is not None else 0
+        return 1
+
     def run(self):
         self.logger.log("Zarr pipeline run started.")
         self.logger.log_config(self.app_config)
@@ -100,12 +110,26 @@ class ZarrProcessingPipelineThread(QThread):
             height, width = first_image.shape
 
             zarr_input_stack = zarr.zeros((total_images, height, width), chunks=(1, height, width), dtype='uint8')
-            for i, filename in enumerate(image_filenames_filtered):
-                if not self._is_running: return
-                filepath = os.path.join(input_path, filename)
-                img = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
-                zarr_input_stack[i, :, :] = img if img is not None else 0
-                self.progress_update.emit(int(((i + 1) / total_images) * 33))
+
+            self.status_update.emit(f"Loading {total_images} slices into Zarr store using {self.max_workers} threads...")
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                tasks = [(i, filename, input_path, zarr_input_stack) for i, filename in enumerate(image_filenames_filtered)]
+                futures = [executor.submit(self._load_slice, task) for task in tasks]
+
+                processed_count = 0
+                for future in concurrent.futures.as_completed(futures):
+                    if not self._is_running:
+                        for f in futures: f.cancel()
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        self.status_update.emit("Stopping...")
+                        return
+
+                    processed_count += future.result()
+                    progress = int((processed_count / total_images) * 33)
+                    self.progress_update.emit(progress)
+                    self.status_update.emit(f"Loaded slice {processed_count}/{total_images} into Zarr store.")
+
             self.status_update.emit("Zarr data ingestion complete.")
 
             zarr_z_blended_stack = zarr.zeros_like(zarr_input_stack)
