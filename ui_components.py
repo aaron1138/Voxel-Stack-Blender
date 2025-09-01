@@ -35,6 +35,7 @@ from config import (
 )
 from pyside_xy_blend_tab import XYBlendTab
 from processing_pipeline import ProcessingPipelineThread
+from zarr_processing_pipeline import ZarrProcessingPipelineThread
 
 class ImageProcessorApp(QWidget):
     """The main application window, now with a restructured UI."""
@@ -146,6 +147,31 @@ class ImageProcessorApp(QWidget):
 
         self.io_stacked_widget.addWidget(uvtools_mode_widget)
 
+        # --- Voxel Dimensions ---
+        voxel_dims_group = QGroupBox("Voxel Dimensions (for Anisotropy)")
+        voxel_dims_layout = QHBoxLayout(voxel_dims_group)
+
+        voxel_dims_layout.addWidget(QLabel("X (µm):"))
+        self.voxel_x_edit = QLineEdit("25")
+        self.voxel_x_edit.setValidator(QIntValidator(1, 100, self))
+        self.voxel_x_edit.setFixedWidth(50)
+        voxel_dims_layout.addWidget(self.voxel_x_edit)
+
+        voxel_dims_layout.addWidget(QLabel("Y (µm):"))
+        self.voxel_y_edit = QLineEdit("25")
+        self.voxel_y_edit.setValidator(QIntValidator(1, 100, self))
+        self.voxel_y_edit.setFixedWidth(50)
+        voxel_dims_layout.addWidget(self.voxel_y_edit)
+
+        voxel_dims_layout.addWidget(QLabel("Z (µm):"))
+        self.voxel_z_edit = QLineEdit("50")
+        self.voxel_z_edit.setValidator(QIntValidator(1, 100, self))
+        self.voxel_z_edit.setFixedWidth(50)
+        voxel_dims_layout.addWidget(self.voxel_z_edit)
+        voxel_dims_layout.addStretch(1)
+
+        io_layout.addWidget(voxel_dims_group)
+
         main_processing_layout.addWidget(io_group)
 
         # --- Stack Blending Section ---
@@ -176,26 +202,8 @@ class ImageProcessorApp(QWidget):
 
         common_blending_layout.setColumnStretch(2, 1)
 
-        # --- Anisotropic Correction ---
-        anisotropic_widget = QWidget()
-        anisotropic_layout = QHBoxLayout(anisotropic_widget)
-        anisotropic_layout.setContentsMargins(0, 0, 0, 0)
-        self.anisotropic_checkbox = QCheckBox("Enable Anisotropic Distance Correction")
-        anisotropic_layout.addWidget(self.anisotropic_checkbox)
-        anisotropic_layout.addWidget(QLabel("X Factor:"))
-        self.anisotropic_x_edit = QLineEdit("1.0")
-        self.anisotropic_x_edit.setValidator(QDoubleValidator(0.1, 10.0, 2, self))
-        self.anisotropic_x_edit.setFixedWidth(50)
-        anisotropic_layout.addWidget(self.anisotropic_x_edit)
-        anisotropic_layout.addWidget(QLabel("Y Factor:"))
-        self.anisotropic_y_edit = QLineEdit("1.0")
-        self.anisotropic_y_edit.setValidator(QDoubleValidator(0.1, 10.0, 2, self))
-        self.anisotropic_y_edit.setFixedWidth(50)
-        anisotropic_layout.addWidget(self.anisotropic_y_edit)
-        anisotropic_layout.addStretch(1)
-
-        # Add the new row of widgets to the grid layout
-        common_blending_layout.addWidget(anisotropic_widget, 2, 0, 1, 3)
+        self.z_blend_anisotropic_checkbox = QCheckBox("Enable Anisotropic Correction (Enhanced EDT)")
+        common_blending_layout.addWidget(self.z_blend_anisotropic_checkbox, 2, 0, 1, 2)
 
         blending_layout.addLayout(common_blending_layout)
 
@@ -266,6 +274,12 @@ class ImageProcessorApp(QWidget):
 
         self.debug_checkbox = QCheckBox("Save Intermediate Debug Images")
         general_layout.addWidget(self.debug_checkbox)
+
+        self.zarr_pipeline_checkbox = QCheckBox("Use Zarr Voxel Data Store (Experimental)")
+        general_layout.addWidget(self.zarr_pipeline_checkbox)
+
+        self.zarr_save_checkbox = QCheckBox("Save Zarr Data Store to disk (Debugging)")
+        general_layout.addWidget(self.zarr_save_checkbox)
         
         config_buttons_layout = QHBoxLayout()
         self.save_config_button = QPushButton("Save Config...")
@@ -357,9 +371,11 @@ class ImageProcessorApp(QWidget):
         self.uvtools_output_input_radio.setChecked(config.uvtools_output_location == "input_folder")
         self.receding_layers_edit.setText(str(config.receding_layers))
         self.fade_dist_receding_edit.setText(str(config.fixed_fade_distance_receding))
-        self.anisotropic_checkbox.setChecked(config.anisotropic_params.enabled)
-        self.anisotropic_x_edit.setText(str(config.anisotropic_params.x_factor))
-        self.anisotropic_y_edit.setText(str(config.anisotropic_params.y_factor))
+
+        self.voxel_x_edit.setText(str(config.voxel_dims.x))
+        self.voxel_y_edit.setText(str(config.voxel_dims.y))
+        self.voxel_z_edit.setText(str(config.voxel_dims.z))
+        self.z_blend_anisotropic_checkbox.setChecked(config.enable_anisotropic_correction)
 
         # --- Blending Mode Loading ---
         index = self.blending_mode_combo.findData(config.blending_mode)
@@ -379,6 +395,8 @@ class ImageProcessorApp(QWidget):
         self.thread_count_edit.setText(str(config.thread_count))
         self.numba_checkbox.setChecked(config.use_numba_jit)
         self.debug_checkbox.setChecked(config.debug_save)
+        self.zarr_pipeline_checkbox.setChecked(config.use_zarr_pipeline)
+        self.zarr_save_checkbox.setChecked(config.save_zarr_to_disk)
         
         self.xy_blend_tab.apply_settings(config)
 
@@ -438,16 +456,26 @@ class ImageProcessorApp(QWidget):
         try: config.fixed_fade_distance_receding = float(self.fade_dist_receding_edit.text().replace(',', '.'))
         except ValueError: config.fixed_fade_distance_receding = 10.0
 
-        config.anisotropic_params.enabled = self.anisotropic_checkbox.isChecked()
-        try: config.anisotropic_params.x_factor = float(self.anisotropic_x_edit.text().replace(',', '.'))
-        except ValueError: config.anisotropic_params.x_factor = 1.0
-        try: config.anisotropic_params.y_factor = float(self.anisotropic_y_edit.text().replace(',', '.'))
-        except ValueError: config.anisotropic_params.y_factor = 1.0
+        config.enable_anisotropic_correction = self.z_blend_anisotropic_checkbox.isChecked()
+        try:
+            config.voxel_dims.x = int(self.voxel_x_edit.text())
+        except ValueError:
+            config.voxel_dims.x = 25
+        try:
+            config.voxel_dims.y = int(self.voxel_y_edit.text())
+        except ValueError:
+            config.voxel_dims.y = 25
+        try:
+            config.voxel_dims.z = int(self.voxel_z_edit.text())
+        except ValueError:
+            config.voxel_dims.z = 50
 
         try: config.thread_count = int(self.thread_count_edit.text())
         except ValueError: config.thread_count = DEFAULT_NUM_WORKERS
         config.use_numba_jit = self.numba_checkbox.isChecked()
         config.debug_save = self.debug_checkbox.isChecked()
+        config.use_zarr_pipeline = self.zarr_pipeline_checkbox.isChecked()
+        config.save_zarr_to_disk = self.zarr_save_checkbox.isChecked()
         
         config.save("app_config.json")
 
@@ -508,7 +536,12 @@ class ImageProcessorApp(QWidget):
                     raise ValueError("Input Slice File is not valid.")
             
             self.set_ui_enabled(False)
-            self.processor_thread = ProcessingPipelineThread(app_config=config, max_workers=config.thread_count)
+
+            if config.use_zarr_pipeline:
+                self.processor_thread = ZarrProcessingPipelineThread(app_config=config, max_workers=config.thread_count)
+            else:
+                self.processor_thread = ProcessingPipelineThread(app_config=config, max_workers=config.thread_count)
+
             self.processor_thread.status_update.connect(self.update_status)
             self.processor_thread.progress_update.connect(self.progress_bar.setValue)
             self.processor_thread.error_signal.connect(self.show_error)

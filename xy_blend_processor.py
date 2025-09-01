@@ -22,7 +22,7 @@ import numpy as np
 import os
 from typing import List, Optional
 import lut_manager
-from config import XYBlendOperation, LutParameters
+from config import XYBlendOperation, LutParameters, app_config as config
 
 def apply_gaussian_blur(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
     """Applies Gaussian blur to an 8-bit grayscale image."""
@@ -30,6 +30,16 @@ def apply_gaussian_blur(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
     ksize_y = op.gaussian_ksize_y
     sigma_x = op.gaussian_sigma_x
     sigma_y = op.gaussian_sigma_y
+
+    if op.enable_anisotropic_correction and config.voxel_dims.x > 0 and abs(config.voxel_dims.y - config.voxel_dims.x) > 0:
+        y_factor = config.voxel_dims.y / config.voxel_dims.x
+        # If user hasn't specified a sigma_y, calculate it based on sigma_x and the anisotropy
+        if op.gaussian_sigma_y == 0 and op.gaussian_sigma_x > 0:
+             sigma_y = sigma_x * y_factor
+        # Always calculate ksize_y based on ksize_x when correction is enabled
+        ksize_y = int(ksize_x * y_factor)
+        if ksize_y % 2 == 0: ksize_y += 1
+
     return cv2.GaussianBlur(image, (ksize_x, ksize_y), sigmaX=sigma_x, sigmaY=sigma_y)
 
 def apply_bilateral_filter(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
@@ -37,6 +47,19 @@ def apply_bilateral_filter(image: np.ndarray, op: XYBlendOperation) -> np.ndarra
     d = op.bilateral_d
     sigma_color = op.bilateral_sigma_color
     sigma_space = op.bilateral_sigma_space
+
+    if op.enable_anisotropic_correction and config.voxel_dims.x > 0 and abs(config.voxel_dims.y - config.voxel_dims.x) > 0:
+        original_height, original_width = image.shape
+        y_factor = config.voxel_dims.y / config.voxel_dims.x
+
+        if abs(y_factor - 1.0) > 1e-6:
+            new_height = int(original_height * y_factor)
+
+            # Resize, filter, resize back
+            resized_img = cv2.resize(image, (original_width, new_height), interpolation=cv2.INTER_LINEAR)
+            filtered_resized_img = cv2.bilateralFilter(resized_img, d, sigma_color, sigma_space)
+            return cv2.resize(filtered_resized_img, (original_width, original_height), interpolation=cv2.INTER_LINEAR)
+
     return cv2.bilateralFilter(image, d, sigma_color, sigma_space)
 
 def apply_median_blur(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:

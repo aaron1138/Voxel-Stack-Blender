@@ -354,26 +354,39 @@ def _calculate_receding_gradient_field_enhanced_edt(current_white_mask, prior_bi
     distance_transform_src = cv2.bitwise_not(current_white_mask)
 
     # --- Anisotropic Correction ---
-    if config.anisotropic_params.enabled:
-        ap = config.anisotropic_params
+    if config.enable_anisotropic_correction:
         original_height, original_width = distance_transform_src.shape
 
-        # Clamp factors to prevent excessive scaling
-        x_factor = max(0.1, min(10.0, ap.x_factor))
-        y_factor = max(0.1, min(10.0, ap.y_factor))
+        # Avoid division by zero if voxel dimensions are not set
+        if config.voxel_dims.x > 0 and config.voxel_dims.y > 0:
+            # Normalize factors relative to the X dimension
+            x_factor = 1.0
+            y_factor = config.voxel_dims.y / config.voxel_dims.x
 
-        # Only resize if factors are not 1.0 to avoid unnecessary work
-        if x_factor != 1.0 or y_factor != 1.0:
-            new_width = int(original_width * x_factor)
-            new_height = int(original_height * y_factor)
+            # Only perform the expensive resize operations if correction is needed
+            if abs(y_factor - 1.0) > 1e-6: # Check for floating point inequality
+                new_width = int(original_width * x_factor)
+                new_height = int(original_height * y_factor)
 
-            # Resize the source mask, calculate distance, then resize back
-            resized_src = cv2.resize(distance_transform_src, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
-            resized_dist_map = cv2.distanceTransform(resized_src, cv2.DIST_L2, 5)
+                # Clamp dimensions to avoid excessive memory usage
+                max_dim = 32767 # Max dimension for cv2 resize
+                if new_width > max_dim or new_height > max_dim:
+                    print(f"Warning: Anisotropic scaling resulted in oversized dimensions ({new_width}x{new_height}). Clamping to safe limits.")
+                    scale = min(max_dim / new_width, max_dim / new_height)
+                    new_width = int(new_width * scale)
+                    new_height = int(new_height * scale)
 
-            # Resize the distance map back to original dimensions
-            distance_map = cv2.resize(resized_dist_map, (original_width, original_height), interpolation=cv2.INTER_LINEAR)
+                # Resize the source mask, calculate distance, then resize back
+                resized_src = cv2.resize(distance_transform_src, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
+                resized_dist_map = cv2.distanceTransform(resized_src, cv2.DIST_L2, 5)
+
+                # Resize the distance map back to original dimensions
+                distance_map = cv2.resize(resized_dist_map, (original_width, original_height), interpolation=cv2.INTER_LINEAR)
+            else:
+                # If factors are 1.0, no correction is needed
+                distance_map = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5)
         else:
+            # Fallback if voxel dimensions are invalid
             distance_map = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5)
     else:
         distance_map = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5)
