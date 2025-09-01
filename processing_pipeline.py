@@ -4,7 +4,8 @@ import cv2
 import concurrent.futures
 import collections
 import numpy as np
-from typing import List
+import sparse
+from typing import List, Tuple
 import subprocess
 import datetime
 import shutil
@@ -112,6 +113,121 @@ class ProcessingPipelineThread(QThread):
         print(f"Successfully wrote output file: {output_filepath}") # Verification print
         return output_filepath
 
+    @staticmethod
+    def _load_image_for_sparse(args: Tuple[int, str]) -> Tuple[int, np.ndarray, np.ndarray]:
+        """Loads a single image for placement into the sparse array."""
+        idx, filepath = args
+        binary_image, original_image = core.load_image(filepath)
+        return idx, binary_image, original_image
+
+    def _run_sparse_array_pipeline(self, input_path: str, processing_output_path: str, image_filenames_filtered: List[str], total_images: int, numeric_pattern: re.Pattern):
+        """Pipeline for when 'Load full stack as sparse array' is enabled."""
+        self.status_update.emit("Loading images into sparse array...")
+
+        # 1. Load first image to get dimensions
+        first_img_path = os.path.join(input_path, image_filenames_filtered[0])
+        _, first_img_original = core.load_image(first_img_path)
+        if first_img_original is None:
+            raise ValueError("Could not load the first image to determine stack dimensions.")
+        height, width = first_img_original.shape
+
+        # 2. Create sparse arrays
+        input_binary_stack = sparse.DOK((total_images, height, width), dtype=np.uint8)
+        input_original_stack = sparse.DOK((total_images, height, width), dtype=np.uint8)
+        output_stack = sparse.DOK((total_images, height, width), dtype=np.uint8)
+
+        # 3. Load all images in parallel
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            image_paths = [os.path.join(input_path, f) for f in image_filenames_filtered]
+            future_to_idx = {executor.submit(self._load_image_for_sparse, (i, path)): i for i, path in enumerate(image_paths)}
+
+            loaded_count = 0
+            for future in concurrent.futures.as_completed(future_to_idx):
+                if not self._is_running: break
+                try:
+                    idx, binary_img, original_img = future.result()
+                    if binary_img is not None:
+                        input_binary_stack[idx, :, :] = binary_img
+                        input_original_stack[idx, :, :] = original_img
+                    loaded_count += 1
+                    self.status_update.emit(f"Loaded {loaded_count}/{total_images} images into RAM...")
+                    self.progress_update.emit(int((loaded_count / total_images) * 50)) # Loading is ~half the work
+                except Exception as exc:
+                    self.error_occurred = True
+                    self.error_signal.emit(f"Failed to load an image: {exc}")
+                    self.stop_processing()
+                    return
+
+        if not self._is_running: return
+
+        self.status_update.emit("All images loaded. Starting processing...")
+        self.logger.log("Sparse array loading complete. Starting processing.")
+
+        # Convert to COO for faster slicing during processing
+        input_binary_stack = input_binary_stack.asformat('coo')
+        input_original_stack = input_original_stack.asformat('coo')
+
+        tracker = ROITracker()
+
+        # 4. Process slice by slice
+        for i in range(total_images):
+            if not self._is_running: break
+
+            self.status_update.emit(f"Processing layer {i+1}/{total_images}...")
+
+            current_binary_image = input_binary_stack[i, :, :].todense()
+            original_image = input_original_stack[i, :, :].todense()
+
+            start_idx = max(0, i - self.app_config.receding_layers)
+            prior_masks = [input_binary_stack[j, :, :].todense() for j in range(start_idx, i)]
+
+            classified_rois = []
+            if self.app_config.blending_mode == ProcessingMode.ROI_FADE:
+                filename = image_filenames_filtered[i]
+                layer_index = int(numeric_pattern.search(filename).group(1))
+                rois = core.identify_rois(current_binary_image, self.app_config.roi_params.min_size)
+                classified_rois = tracker.update_and_classify(rois, layer_index, self.app_config)
+
+            debug_info = {'output_folder': processing_output_path, 'base_filename': os.path.splitext(image_filenames_filtered[i])[0]} if self.app_config.debug_save else None
+
+            receding_gradient = core.process_z_blending(
+                current_binary_image,
+                prior_masks,
+                self.app_config,
+                classified_rois,
+                debug_info=debug_info
+            )
+
+            output_image_from_core = core.merge_to_output(original_image, receding_gradient)
+            final_processed_image = xy_blend_processor.process_xy_pipeline(output_image_from_core, self.app_config.xy_blend_pipeline)
+
+            output_stack[i, :, :] = final_processed_image
+
+            self.progress_update.emit(50 + int((i + 1) / total_images * 50)) # Second half of progress
+
+        if not self._is_running: return
+
+        # 5. Save all processed images in parallel
+        self.status_update.emit("Processing complete. Saving output images...")
+        output_stack = output_stack.asformat('coo') # Use COO for faster iteration
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            def save_task(idx, data):
+                if not self._is_running: return
+                output_filename = os.path.basename(image_filenames_filtered[idx])
+                output_filepath = os.path.join(processing_output_path, output_filename)
+                cv2.imwrite(output_filepath, data)
+
+            save_futures = [executor.submit(save_task, i, output_stack[i, :, :].todense()) for i in range(total_images)]
+
+            saved_count = 0
+            for future in concurrent.futures.as_completed(save_futures):
+                if not self._is_running: break
+                saved_count += 1
+                self.status_update.emit(f"Saved {saved_count}/{total_images} images...")
+
+        self.logger.log("Sparse array processing and saving complete.")
+
     def run(self):
         """
         The main processing loop.
@@ -160,70 +276,14 @@ class ProcessingPipelineThread(QThread):
                 return
 
             self.logger.log(f"Found {total_images} images to process.")
-            prior_binary_masks_cache = collections.deque(maxlen=self.app_config.receding_layers)
-            tracker = ROITracker()
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                active_futures = set()
-                processed_count = 0
-                max_active_futures = self.max_workers * 2
-
-                def process_completed_futures(completed_futures):
-                    nonlocal processed_count
-                    for future in completed_futures:
-                        try:
-                            future.result()
-                            processed_count += 1
-                            self.status_update.emit(f"Completed processing images ({processed_count}/{total_images})")
-                            self.progress_update.emit(int((processed_count / total_images) * 100))
-                        except Exception as exc:
-                            import traceback
-                            self.error_occurred = True
-                            error_detail = f"An image processing task failed: {exc}\n{traceback.format_exc()}"
-                            self.logger.log(f"ERROR during image processing task: {error_detail}")
-                            self.error_signal.emit(error_detail)
-                            self.stop_processing()
-                        active_futures.remove(future)
-
-                for i, filename in enumerate(image_filenames_filtered):
-                    if not self._is_running:
-                        self.logger.log("Processing stopped by user.")
-                        self.status_update.emit("Processing stopped by user.")
-                        break
-
-                    if len(active_futures) >= max_active_futures:
-                        done, _ = concurrent.futures.wait(active_futures, return_when=concurrent.futures.FIRST_COMPLETED)
-                        process_completed_futures(done)
-
-                    self.status_update.emit(f"Analyzing {filename} ({i + 1}/{total_images})")
-                    filepath = os.path.join(input_path, filename)
-                    binary_image, original_image = core.load_image(filepath)
-                    if binary_image is None:
-                        self.status_update.emit(f"Skipping unloadable image: {filename}")
-                        total_images = max(1, total_images - 1)
-                        continue
-
-                    classified_rois = []
-                    if self.app_config.blending_mode == ProcessingMode.ROI_FADE:
-                        layer_index = get_numeric_part(filename)
-                        rois = core.identify_rois(binary_image, self.app_config.roi_params.min_size)
-                        classified_rois = tracker.update_and_classify(rois, layer_index, self.app_config)
-
-                    image_data_for_task = {
-                        'filepath': filepath, 'binary_image': binary_image,
-                        'original_image': original_image, 'classified_rois': classified_rois
-                    }
-                    future = executor.submit(
-                        self._process_single_image_task, image_data_for_task,
-                        list(reversed(prior_binary_masks_cache)), self.app_config,
-                        self.app_config.xy_blend_pipeline, processing_output_path,
-                        self.app_config.debug_save
-                    )
-                    active_futures.add(future)
-                    prior_binary_masks_cache.append(binary_image)
-
-                if self._is_running and active_futures:
-                    process_completed_futures(concurrent.futures.as_completed(active_futures))
+            # --- Conditional Pipeline Execution ---
+            if self.app_config.use_sparse_array and self.app_config.input_mode == "folder":
+                self._run_sparse_array_pipeline(input_path, processing_output_path, image_filenames_filtered, total_images, numeric_pattern)
+            else:
+                if self.app_config.use_sparse_array:
+                    self.status_update.emit("Sparse array mode is only available for Folder Input Mode. Continuing with normal processing.")
+                self._run_standard_pipeline(input_path, processing_output_path, image_filenames_filtered, total_images, numeric_pattern)
 
             self.logger.log("Stack blending complete.")
             if self.app_config.input_mode == "uvtools" and not self.error_occurred:
@@ -268,6 +328,73 @@ class ProcessingPipelineThread(QThread):
 
             self.logger.log_total_time()
             self.finished_signal.emit()
+
+    def _run_standard_pipeline(self, input_path: str, processing_output_path: str, image_filenames_filtered: List[str], total_images: int, numeric_pattern: re.Pattern):
+        """The original file-based processing pipeline."""
+        prior_binary_masks_cache = collections.deque(maxlen=self.app_config.receding_layers)
+        tracker = ROITracker()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            active_futures = set()
+            processed_count = 0
+            max_active_futures = self.max_workers * 2
+
+            def process_completed_futures(completed_futures):
+                nonlocal processed_count
+                for future in completed_futures:
+                    try:
+                        future.result()
+                        processed_count += 1
+                        self.status_update.emit(f"Completed processing images ({processed_count}/{total_images})")
+                        self.progress_update.emit(int((processed_count / total_images) * 100))
+                    except Exception as exc:
+                        import traceback
+                        self.error_occurred = True
+                        error_detail = f"An image processing task failed: {exc}\n{traceback.format_exc()}"
+                        self.logger.log(f"ERROR during image processing task: {error_detail}")
+                        self.error_signal.emit(error_detail)
+                        self.stop_processing()
+                    active_futures.remove(future)
+
+            for i, filename in enumerate(image_filenames_filtered):
+                if not self._is_running:
+                    self.logger.log("Processing stopped by user.")
+                    self.status_update.emit("Processing stopped by user.")
+                    break
+
+                if len(active_futures) >= max_active_futures:
+                    done, _ = concurrent.futures.wait(active_futures, return_when=concurrent.futures.FIRST_COMPLETED)
+                    process_completed_futures(done)
+
+                self.status_update.emit(f"Analyzing {filename} ({i + 1}/{total_images})")
+                filepath = os.path.join(input_path, filename)
+                binary_image, original_image = core.load_image(filepath)
+                if binary_image is None:
+                    self.status_update.emit(f"Skipping unloadable image: {filename}")
+                    total_images = max(1, total_images - 1)
+                    continue
+
+                classified_rois = []
+                if self.app_config.blending_mode == ProcessingMode.ROI_FADE:
+                    layer_index = get_numeric_part(filename)
+                    rois = core.identify_rois(binary_image, self.app_config.roi_params.min_size)
+                    classified_rois = tracker.update_and_classify(rois, layer_index, self.app_config)
+
+                image_data_for_task = {
+                    'filepath': filepath, 'binary_image': binary_image,
+                    'original_image': original_image, 'classified_rois': classified_rois
+                }
+                future = executor.submit(
+                    self._process_single_image_task, image_data_for_task,
+                    list(reversed(prior_binary_masks_cache)), self.app_config,
+                    self.app_config.xy_blend_pipeline, processing_output_path,
+                    self.app_config.debug_save
+                )
+                active_futures.add(future)
+                prior_binary_masks_cache.append(binary_image)
+
+            if self._is_running and active_futures:
+                process_completed_futures(concurrent.futures.as_completed(active_futures))
 
     def stop_processing(self):
         self._is_running = False
