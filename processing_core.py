@@ -22,8 +22,10 @@ import numpy as np
 import os
 from scipy import ndimage
 import numba
+from typing import Optional
 
-from config import ProcessingMode
+from config import ProcessingMode, LutParameters
+import lut_manager
 
 def load_image(filepath):
     """
@@ -284,6 +286,45 @@ def _calculate_weighted_receding_gradient_field(current_white_mask, prior_binary
     return final_gradient_map
 
 
+def _get_lut(lut_params: LutParameters) -> Optional[np.ndarray]:
+    """
+    Generates or loads a LUT based on the provided parameters.
+    This is a helper function to avoid code duplication.
+    """
+    generated_lut: Optional[np.ndarray] = None
+    try:
+        if lut_params.lut_source == "generated":
+            args = (lut_params.input_min, lut_params.input_max, lut_params.output_min, lut_params.output_max)
+            if lut_params.lut_generation_type == "linear":
+                generated_lut = lut_manager.generate_linear_lut(*args)
+            elif lut_params.lut_generation_type == "gamma":
+                generated_lut = lut_manager.generate_gamma_lut(lut_params.gamma_value, *args)
+            elif lut_params.lut_generation_type == "s_curve":
+                generated_lut = lut_manager.generate_s_curve_lut(lut_params.s_curve_contrast, *args)
+            elif lut_params.lut_generation_type == "log":
+                generated_lut = lut_manager.generate_log_lut(lut_params.log_param, *args)
+            elif lut_params.lut_generation_type == "exp":
+                generated_lut = lut_manager.generate_exp_lut(lut_params.exp_param, *args)
+            elif lut_params.lut_generation_type == "sqrt":
+                generated_lut = lut_manager.generate_sqrt_lut(lut_params.sqrt_param, *args)
+            elif lut_params.lut_generation_type == "rodbard":
+                generated_lut = lut_manager.generate_rodbard_lut(lut_params.rodbard_param, *args)
+            elif lut_params.lut_generation_type == "spline":
+                generated_lut = lut_manager.generate_spline_lut(lut_params.spline_points, *args)
+        elif lut_params.lut_source == "file":
+            if lut_params.fixed_lut_path and os.path.exists(lut_params.fixed_lut_path):
+                generated_lut = lut_manager.load_lut(lut_params.fixed_lut_path)
+            else:
+                print(f"Warning: LUT file not found: '{lut_params.fixed_lut_path}'.")
+    except Exception as e:
+        print(f"Error processing LUT: {e}.")
+
+    if generated_lut is None:
+        print("Warning: LUT generation or loading failed. Using default pass-through LUT.")
+        return lut_manager.generate_linear_lut(0, 255, 0, 255)
+
+    return generated_lut
+
 def _calculate_receding_gradient_field_enhanced_edt_scipy(receding_distance_map, labels, num_labels, fade_distance_limit):
     """
     Calculates the Enhanced EDT gradient using the SciPy vectorized approach.
@@ -404,6 +445,81 @@ def _calculate_receding_gradient_field_enhanced_edt(current_white_mask, prior_bi
     return cv2.bitwise_and(final_gradient_map, final_gradient_map, mask=receding_white_areas)
 
 
+def _calculate_receding_gradient_field_enhanced_edt_v2(current_white_mask, prior_binary_masks, config, debug_info=None):
+    """
+    Applies a user-defined LUT to the distance map before feeding it into the
+    standard Enhanced EDT normalization logic.
+    """
+    if not prior_binary_masks:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    # --- 1. Standard EDT Setup (same as original Enhanced EDT) ---
+    prior_white_combined_mask = find_prior_combined_white_mask(prior_binary_masks)
+    if prior_white_combined_mask is None:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    receding_white_areas = cv2.bitwise_and(prior_white_combined_mask, cv2.bitwise_not(current_white_mask))
+    if cv2.countNonZero(receding_white_areas) == 0:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    distance_transform_src = cv2.bitwise_not(current_white_mask)
+
+    if config.anisotropic_params.enabled:
+        ap = config.anisotropic_params
+        original_height, original_width = distance_transform_src.shape
+        x_factor = max(0.1, min(10.0, ap.x_factor))
+        y_factor = max(0.1, min(10.0, ap.y_factor))
+        if x_factor != 1.0 or y_factor != 1.0:
+            new_width, new_height = int(original_width * x_factor), int(original_height * y_factor)
+            resized_src = cv2.resize(distance_transform_src, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
+            resized_dist_map = cv2.distanceTransform(resized_src, cv2.DIST_L2, 5)
+            distance_map = cv2.resize(resized_dist_map, (original_width, original_height), interpolation=cv2.INTER_LINEAR)
+        else:
+            distance_map = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5)
+    else:
+        distance_map = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5)
+
+    receding_distance_map = cv2.bitwise_and(distance_map, distance_map, mask=receding_white_areas)
+    num_labels, labels = cv2.connectedComponents(receding_white_areas)
+    if num_labels <= 1:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    # --- 2. Distance Warping using LUT ---
+    fade_distance_limit = config.fixed_fade_distance_receding
+    if fade_distance_limit <= 0: fade_distance_limit = 1.0
+
+    # Get the user-defined LUT for distance warping
+    distance_lut = _get_lut(config.enhanced_edt_v2_params.lut_params)
+
+    # Normalize distance map to 0-255 for LUT application
+    # We clip to the limit, so distances > limit become 255.
+    scaled_dist_map = (np.clip(receding_distance_map, 0, fade_distance_limit) / fade_distance_limit) * 255
+
+    # Apply the LUT
+    warped_scaled_map = cv2.LUT(scaled_dist_map.astype(np.uint8), distance_lut)
+
+    # Scale the warped 0-255 map back to a distance map
+    warped_distance_map = (warped_scaled_map.astype(np.float32) / 255.0) * fade_distance_limit
+
+    # --- 3. Run Standard EDT Logic on the Warped Distances ---
+    if config.use_numba_jit:
+        try:
+            final_gradient_map = _calculate_receding_gradient_field_enhanced_edt_numba(
+                warped_distance_map, labels.astype(np.int32), num_labels, fade_distance_limit
+            )
+        except Exception as e:
+            print(f"Numba JIT execution failed: {e}. Falling back to SciPy.")
+            final_gradient_map = _calculate_receding_gradient_field_enhanced_edt_scipy(
+                warped_distance_map, labels, num_labels, fade_distance_limit
+            )
+    else:
+        final_gradient_map = _calculate_receding_gradient_field_enhanced_edt_scipy(
+            warped_distance_map, labels, num_labels, fade_distance_limit
+        )
+
+    return cv2.bitwise_and(final_gradient_map, final_gradient_map, mask=receding_white_areas)
+
+
 def process_z_blending(current_white_mask, prior_masks, config, classified_rois, debug_info=None):
     """
     Main entry point for Z-axis blending. Dispatches to the correct blending mode.
@@ -426,6 +542,13 @@ def process_z_blending(current_white_mask, prior_masks, config, classified_rois,
         )
     elif config.blending_mode == ProcessingMode.ENHANCED_EDT:
         return _calculate_receding_gradient_field_enhanced_edt(
+            current_white_mask,
+            prior_masks,
+            config,
+            debug_info
+        )
+    elif config.blending_mode == ProcessingMode.ENHANCED_EDT_V2:
+        return _calculate_receding_gradient_field_enhanced_edt_v2(
             current_white_mask,
             prior_masks,
             config,
