@@ -201,6 +201,7 @@ class Config:
     # --- General Settings ---
     thread_count: int = DEFAULT_NUM_WORKERS
     use_numba_jit: bool = False
+    use_sparse_stack: bool = False
     debug_save: bool = False
     xy_blend_pipeline: List[XYBlendOperation] = field(default_factory=lambda: [XYBlendOperation("none")])
 

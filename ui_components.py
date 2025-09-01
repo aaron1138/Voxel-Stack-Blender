@@ -264,6 +264,10 @@ class ImageProcessorApp(QWidget):
         self.numba_checkbox.setToolTip("Uses a Just-In-Time compiler (Numba) for the Enhanced EDT calculation, which may be significantly faster. Requires the 'numba' package.")
         general_layout.addWidget(self.numba_checkbox)
 
+        self.sparse_stack_checkbox = QCheckBox("Load full stack as sparse array to RAM")
+        self.sparse_stack_checkbox.setToolTip("Loads the entire image stack into memory using a sparse representation. This can be faster for complex operations and enables cross-layer features, but uses more RAM.")
+        general_layout.addWidget(self.sparse_stack_checkbox)
+
         self.debug_checkbox = QCheckBox("Save Intermediate Debug Images")
         general_layout.addWidget(self.debug_checkbox)
         
@@ -378,6 +382,7 @@ class ImageProcessorApp(QWidget):
         # --- General Settings ---
         self.thread_count_edit.setText(str(config.thread_count))
         self.numba_checkbox.setChecked(config.use_numba_jit)
+        self.sparse_stack_checkbox.setChecked(config.use_sparse_stack)
         self.debug_checkbox.setChecked(config.debug_save)
         
         self.xy_blend_tab.apply_settings(config)
@@ -447,6 +452,7 @@ class ImageProcessorApp(QWidget):
         try: config.thread_count = int(self.thread_count_edit.text())
         except ValueError: config.thread_count = DEFAULT_NUM_WORKERS
         config.use_numba_jit = self.numba_checkbox.isChecked()
+        config.use_sparse_stack = self.sparse_stack_checkbox.isChecked()
         config.debug_save = self.debug_checkbox.isChecked()
         
         config.save("app_config.json")
