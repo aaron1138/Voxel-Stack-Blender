@@ -337,50 +337,72 @@ def _calculate_receding_gradient_field_enhanced_edt_numba(receding_distance_map,
 
 def _calculate_receding_gradient_field_enhanced_edt(current_white_mask, prior_binary_masks, config, debug_info=None):
     """
-    Dispatcher for Enhanced EDT. Sets up common data then calls either the
-    SciPy or Numba implementation based on the user's config.
+    New implementation for Enhanced EDT that handles Z-anisotropy correctly by processing each prior layer individually.
     """
     if not prior_binary_masks:
         return np.zeros_like(current_white_mask, dtype=np.uint8)
 
-    prior_white_combined_mask = find_prior_combined_white_mask(prior_binary_masks)
-    if prior_white_combined_mask is None:
-        return np.zeros_like(current_white_mask, dtype=np.uint8)
-
-    receding_white_areas = cv2.bitwise_and(prior_white_combined_mask, cv2.bitwise_not(current_white_mask))
-    if cv2.countNonZero(receding_white_areas) == 0:
-        return np.zeros_like(current_white_mask, dtype=np.uint8)
-
+    # The base XY distance map is calculated once from the current slice's edges.
     distance_transform_src = cv2.bitwise_not(current_white_mask)
+    xy_distance_map = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5)
 
-    # --- Anisotropic Correction ---
-    if config.anisotropic_params.enabled:
-        ap = config.anisotropic_params
-        original_height, original_width = distance_transform_src.shape
+    # Initialize a map to store the minimum effective distance found for each pixel.
+    # Start with a large value.
+    min_effective_dist_map = np.full(current_white_mask.shape, np.finfo(np.float32).max, dtype=np.float32)
 
-        # Clamp factors to prevent excessive scaling
-        x_factor = max(0.1, min(10.0, ap.x_factor))
-        y_factor = max(0.1, min(10.0, ap.y_factor))
+    # This mask will accumulate all areas that are processed.
+    total_receding_mask = np.zeros_like(current_white_mask, dtype=np.uint8)
 
-        # Only resize if factors are not 1.0 to avoid unnecessary work
-        if x_factor != 1.0 or y_factor != 1.0:
-            new_width = int(original_width * x_factor)
-            new_height = int(original_height * y_factor)
+    # Check if anisotropic correction is enabled for this operation.
+    # This now reads the specific config setting for EDT mode.
+    use_anisotropy = config.edt_enable_anisotropic_correction
 
-            # Resize the source mask, calculate distance, then resize back
-            resized_src = cv2.resize(distance_transform_src, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
-            resized_dist_map = cv2.distanceTransform(resized_src, cv2.DIST_L2, 5)
-
-            # Resize the distance map back to original dimensions
-            distance_map = cv2.resize(resized_dist_map, (original_width, original_height), interpolation=cv2.INTER_LINEAR)
-        else:
-            distance_map = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5)
+    if use_anisotropy:
+        # Normalize voxel dimensions to prevent extreme scaling. Use 1 if value is 0.
+        x_um = config.anisotropic_voxel_dimensions.x_um or 1
+        z_um = config.anisotropic_voxel_dimensions.z_um or 1
+        # The Z-scaling factor relative to the X dimension.
+        z_scale_factor = z_um / x_um
     else:
-        distance_map = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5)
+        z_scale_factor = 1.0 # No anisotropy, Z-distance is equivalent to XY-distance in pixels.
 
-    receding_distance_map = cv2.bitwise_and(distance_map, distance_map, mask=receding_white_areas)
+    for i, prior_mask in enumerate(prior_binary_masks):
+        # Identify receding areas for this specific prior layer
+        receding_white_areas = cv2.bitwise_and(prior_mask, cv2.bitwise_not(current_white_mask))
+        if cv2.countNonZero(receding_white_areas) == 0:
+            continue
 
-    num_labels, labels = cv2.connectedComponents(receding_white_areas)
+        # Update the total mask of all processed areas
+        total_receding_mask = cv2.bitwise_or(total_receding_mask, receding_white_areas)
+
+        # The distance in Z is the number of layers we look back.
+        z_distance = i + 1.0
+
+        # Calculate the effective distance for this layer by adding the scaled Z-distance penalty.
+        # This is a fast, linear approximation of 3D distance.
+        effective_dist_this_layer = xy_distance_map + (z_distance * z_scale_factor)
+
+        # Update the minimum effective distance map. A pixel gets the value from this layer
+        # only if it's a receding pixel for this layer AND its new effective distance is smaller
+        # than any previously calculated one.
+        min_effective_dist_map = np.where(
+            (receding_white_areas > 0) & (effective_dist_this_layer < min_effective_dist_map),
+            effective_dist_this_layer,
+            min_effective_dist_map
+        )
+
+    # If no receding areas were found across all priors, return a black image.
+    if cv2.countNonZero(total_receding_mask) == 0:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    # The final distance map to be processed is the one with the minimum effective distances,
+    # masked by the total area of all receding pixels.
+    receding_distance_map = min_effective_dist_map
+    receding_distance_map[total_receding_mask == 0] = 0
+
+    # From here, the logic is the same as the original enhanced EDT, but it operates on our
+    # new anisotropically-corrected effective distance map.
+    num_labels, labels = cv2.connectedComponents(total_receding_mask)
     if num_labels <= 1:
         return np.zeros_like(current_white_mask, dtype=np.uint8)
 

@@ -24,23 +24,50 @@ from typing import List, Optional
 import lut_manager
 from config import XYBlendOperation, LutParameters
 
-def apply_gaussian_blur(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
-    """Applies Gaussian blur to an 8-bit grayscale image."""
+from config import Config
+
+def apply_gaussian_blur(image: np.ndarray, op: XYBlendOperation, config: Config) -> np.ndarray:
+    """Applies Gaussian blur, accounting for anisotropy."""
     ksize_x = op.gaussian_ksize_x
     ksize_y = op.gaussian_ksize_y
     sigma_x = op.gaussian_sigma_x
     sigma_y = op.gaussian_sigma_y
+
+    if op.enable_anisotropic_correction:
+        dims = config.anisotropic_voxel_dimensions
+        x_um = dims.x_um or 1
+        y_um = dims.y_um or 1
+        aspect_ratio = y_um / x_um
+
+        # Scale the kernel size and sigma in one dimension relative to the other
+        if aspect_ratio > 1: # Y is larger, so blur more in Y
+            ksize_y = int(ksize_y * aspect_ratio)
+            sigma_y = sigma_y * aspect_ratio if sigma_y > 0 else 0
+        else: # X is larger, so blur more in X
+            ksize_x = int(ksize_x / aspect_ratio)
+            sigma_x = sigma_x / aspect_ratio if sigma_x > 0 else 0
+
+        # Ensure kernel sizes are odd
+        if ksize_x % 2 == 0: ksize_x += 1
+        if ksize_y % 2 == 0: ksize_y += 1
+
     return cv2.GaussianBlur(image, (ksize_x, ksize_y), sigmaX=sigma_x, sigmaY=sigma_y)
 
-def apply_bilateral_filter(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
-    """Applies a bilateral filter to an 8-bit grayscale image."""
+def apply_bilateral_filter(image: np.ndarray, op: XYBlendOperation, config: Config) -> np.ndarray:
+    """Applies a bilateral filter. Anisotropy is complex here and often not desired. Placeholder for now."""
+    # Note: True anisotropic bilateral filtering is non-trivial.
+    # It would involve scaling the spatial distance in the filter's kernel,
+    # which isn't directly supported by the standard OpenCV function.
+    # For now, we ignore anisotropy for this filter.
     d = op.bilateral_d
     sigma_color = op.bilateral_sigma_color
     sigma_space = op.bilateral_sigma_space
     return cv2.bilateralFilter(image, d, sigma_color, sigma_space)
 
-def apply_median_blur(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
-    """Applies a median blur to an 8-bit grayscale image."""
+def apply_median_blur(image: np.ndarray, op: XYBlendOperation, config: Config) -> np.ndarray:
+    """Applies a median blur. Anisotropy is not applicable to the standard median blur kernel shape."""
+    # Note: Anisotropic median filtering exists but requires custom implementations.
+    # The standard cv2.medianBlur uses a square kernel.
     ksize = op.median_ksize
     if ksize <= 1: return image
     return cv2.medianBlur(image, ksize)
@@ -132,27 +159,26 @@ def apply_lut_operation(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
     return lut_manager.apply_z_lut(image, generated_lut)
 
 
-def process_xy_pipeline(image: np.ndarray, pipeline_ops: List[XYBlendOperation]) -> np.ndarray:
+def process_xy_pipeline(image: np.ndarray, pipeline_ops: List[XYBlendOperation], config: Config) -> np.ndarray:
     """Applies the sequence of operations defined in the pipeline."""
     processed_image = image.copy()
 
     if not pipeline_ops:
         return processed_image
 
-    # Map operation type strings to their corresponding functions for clean dispatch
-    op_map = {
-        "gaussian_blur": apply_gaussian_blur,
-        "bilateral_filter": apply_bilateral_filter,
-        "median_blur": apply_median_blur,
-        "unsharp_mask": apply_unsharp_mask,
-        "resize": apply_resize,
-        "apply_lut": apply_lut_operation,
-    }
-
     for op in pipeline_ops:
-        op_func = op_map.get(op.type)
-        if op_func:
-            processed_image = op_func(processed_image, op)
+        if op.type == "gaussian_blur":
+            processed_image = apply_gaussian_blur(processed_image, op, config)
+        elif op.type == "bilateral_filter":
+            processed_image = apply_bilateral_filter(processed_image, op, config)
+        elif op.type == "median_blur":
+            processed_image = apply_median_blur(processed_image, op, config)
+        elif op.type == "unsharp_mask":
+            processed_image = apply_unsharp_mask(processed_image, op)
+        elif op.type == "resize":
+            processed_image = apply_resize(processed_image, op)
+        elif op.type == "apply_lut":
+            processed_image = apply_lut_operation(processed_image, op)
         elif op.type != "none":
             print(f"Warning: Unknown XY blend operation type '{op.type}'. Skipping.")
         

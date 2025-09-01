@@ -153,44 +153,48 @@ def test_enhanced_edt_max_fade_limit(base_config, edt_function_name):
 
 def test_anisotropic_correction(base_config):
     """
-    Tests that the anisotropic correction correctly scales the distance field.
+    Tests that the Z-anisotropic correction correctly penalizes distances
+    from further Z-layers in the Enhanced EDT mode.
     """
     # 1. Setup
     cfg = base_config
-    cfg.anisotropic_params.enabled = True
-    cfg.anisotropic_params.x_factor = 2.0  # Stretch distances twice as much on X-axis
-    cfg.anisotropic_params.y_factor = 1.0  # Keep Y-axis normal
-    cfg.fixed_fade_distance_receding = 50.0 # Use a large fade distance to not interfere
+    cfg.blending_mode = ProcessingMode.ENHANCED_EDT
+    cfg.edt_enable_anisotropic_correction = True
+    cfg.anisotropic_voxel_dimensions.x_um = 10
+    cfg.anisotropic_voxel_dimensions.y_um = 10
+    cfg.anisotropic_voxel_dimensions.z_um = 100 # Z is 10x "taller" than X/Y
+    cfg.fixed_fade_distance_receding = 1000.0 # Use a large fade distance to not interfere
 
-    # Create a central black square on a white background
-    # The distance transform will be calculated from the edges of this square
-    current_mask = np.ones((100, 100), dtype=np.uint8) * 255
-    cv2.rectangle(current_mask, (45, 45), (54, 54), 0, -1)
+    current_mask = np.zeros((100, 100), dtype=np.uint8)
+    cv2.rectangle(current_mask, (45, 45), (55, 55), 255, -1)
 
-    # The entire area is a receding area for this test
-    prior_mask = np.ones_like(current_mask) * 255
+    # A prior mask that is 1 layer away
+    prior_mask_z1 = np.zeros_like(current_mask)
+    cv2.rectangle(prior_mask_z1, (40, 40), (60, 60), 255, -1)
 
     # 2. Execution
-    # We need to call the full dispatcher function to test the resize logic
+    # We need to call the full dispatcher function to test the new logic
     from processing_core import _calculate_receding_gradient_field_enhanced_edt
-    gradient = _calculate_receding_gradient_field_enhanced_edt(cv2.bitwise_not(current_mask), [prior_mask], cfg)
+
+    # Case 1: No anisotropy
+    cfg.edt_enable_anisotropic_correction = False
+    gradient_no_anisotropy = _calculate_receding_gradient_field_enhanced_edt(current_mask, [prior_mask_z1], cfg)
+
+    # Case 2: With Z-anisotropy enabled
+    cfg.edt_enable_anisotropic_correction = True
+    gradient_with_anisotropy = _calculate_receding_gradient_field_enhanced_edt(current_mask, [prior_mask_z1], cfg)
 
     # 3. Assertions
-    # Point 10 pixels to the left of the black box
-    point_x_dir = (50, 35)
-    # Point 10 pixels above the black box
-    point_y_dir = (35, 50)
+    test_point = (42, 50) # A point inside the receding area
 
-    val_x = gradient[point_x_dir]
-    val_y = gradient[point_y_dir]
+    val_no_anisotropy = gradient_no_anisotropy[test_point]
+    val_with_anisotropy = gradient_with_anisotropy[test_point]
 
-    # Because the X-axis distance is stretched by 2x, the gradient value
-    # at the same physical distance should be STRONGER (closer to white/255)
-    # than the Y-axis value, because its "perceived" distance is smaller.
-    # E.g., a physical distance of 10 on X is now ~20 in the stretched space.
-    # A larger distance means a smaller (weaker) gradient value.
-    assert val_x < val_y
+    # The Z-distance penalty (z_dist * (z_um/x_um) = 1 * (100/10) = 10) is added to the XY distance.
+    # This makes the effective distance much larger for the anisotropic case.
+    # A larger distance results in a smaller (weaker) gradient value.
+    assert val_with_anisotropy < val_no_anisotropy
 
-    # Check that some gradient exists
-    assert val_x > 0
-    assert val_y > 0
+    # And check that both have some gradient
+    assert val_with_anisotropy > 0
+    assert val_no_anisotropy > 0
