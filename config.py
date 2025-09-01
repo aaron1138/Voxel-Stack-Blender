@@ -89,6 +89,7 @@ class XYBlendOperation:
     Represents a single operation in the XY image processing pipeline.
     """
     type: str = "none"
+    anisotropic_correction_enabled: bool = False
     gaussian_ksize_x: int = 3
     gaussian_ksize_y: int = 3
     gaussian_sigma_x: float = 0.0
@@ -149,13 +150,17 @@ class RoiParameters:
     support_max_layer: int = 1000
     support_max_growth: float = 2.5
 
+@dataclass
+class VoxelDimensions:
+    """Parameters for voxel dimensions."""
+    x: int = 25
+    y: int = 25
+    z: int = 50
 
 @dataclass
 class AnisotropicParams:
     """Parameters for anisotropic distance correction."""
-    enabled: bool = False
-    x_factor: float = 1.0
-    y_factor: float = 1.0
+    edt_enabled: bool = False
 
 
 @dataclass
@@ -171,6 +176,9 @@ class Config:
     start_index: Optional[int] = 0
     stop_index: Optional[int] = None
     
+    # --- Voxel Dimensions ---
+    voxel_dimensions: VoxelDimensions = field(default_factory=VoxelDimensions)
+
     # --- UVTools Mode Settings ---
     uvtools_path: str = "C:\\Program Files\\UVTools\\UVToolsCmd.exe"
     uvtools_temp_folder: str = ""
@@ -202,6 +210,8 @@ class Config:
     thread_count: int = DEFAULT_NUM_WORKERS
     use_numba_jit: bool = False
     debug_save: bool = False
+    use_zarr: bool = False
+    save_zarr_to_disk: bool = False
     xy_blend_pipeline: List[XYBlendOperation] = field(default_factory=lambda: [XYBlendOperation("none")])
 
     def to_dict(self) -> dict:
@@ -257,6 +267,11 @@ class Config:
                         anisotropic_field_names = {f.name for f in fields(AnisotropicParams)}
                         filtered_anisotropic_data = {k: v for k, v in value.items() if k in anisotropic_field_names}
                         setattr(config_instance, key, AnisotropicParams(**filtered_anisotropic_data))
+                elif key == 'voxel_dimensions':
+                    if isinstance(value, dict):
+                        voxel_field_names = {f.name for f in fields(VoxelDimensions)}
+                        filtered_voxel_data = {k: v for k, v in value.items() if k in voxel_field_names}
+                        setattr(config_instance, key, VoxelDimensions(**filtered_voxel_data))
                 else:
                     if field_obj.type is bool and isinstance(value, str):
                         value = value.lower() in ('true', '1', 't', 'y')
@@ -299,6 +314,17 @@ def upgrade_config(cfg: Config):
     if hasattr(cfg, 'fixed_fade_distance'):
         cfg.fixed_fade_distance_receding = cfg.fixed_fade_distance
         delattr(cfg, 'fixed_fade_distance')
+    # Upgrade old anisotropic_params
+    if hasattr(cfg, 'anisotropic_params') and hasattr(cfg.anisotropic_params, 'enabled'):
+        # This is a simple migration, more complex logic might be needed
+        # depending on how you want to handle the old settings.
+        cfg.anisotropic_params.edt_enabled = cfg.anisotropic_params.enabled
+        delattr(cfg.anisotropic_params, 'enabled')
+        if hasattr(cfg.anisotropic_params, 'x_factor'):
+            delattr(cfg.anisotropic_params, 'x_factor')
+        if hasattr(cfg.anisotropic_params, 'y_factor'):
+            delattr(cfg.anisotropic_params, 'y_factor')
+
 
 _CONFIG_FILE = "app_config.json"
 app_config = Config.load(_CONFIG_FILE)
