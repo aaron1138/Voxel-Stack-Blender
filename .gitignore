@@ -14,6 +14,7 @@ settings.json
 *.json
 saves/
 logs/
+test-slices/
 # Ignore all .json files in the root directory
 /*.json
 # But DO include the baked_luts folder and its contents
