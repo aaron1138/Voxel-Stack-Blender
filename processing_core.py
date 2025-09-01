@@ -22,6 +22,7 @@ import numpy as np
 import os
 from scipy import ndimage
 import numba
+from scipy import ndimage
 
 from config import ProcessingMode
 
@@ -458,3 +459,90 @@ def merge_to_output(original_current_image, receding_gradient):
     output_image = np.maximum(original_current_image, receding_gradient)
     
     return output_image
+
+def process_z_blending_3d(volume_binary, config):
+    """
+    Performs Z-blending on an entire 3D volume using 3D-native operations.
+    This allows for true 3D anisotropic distance calculations.
+
+    Args:
+        volume_binary (np.ndarray): A 3D boolean numpy array (True for solid).
+        config (Config): The application configuration object.
+
+    Returns:
+        np.ndarray: A 3D volume (float32) representing the calculated gradient.
+    """
+    print("Starting 3D Z-blending process...")
+
+    # 1. Determine sampling for anisotropy
+    if config.edt_anisotropic_correction:
+        # Use voxel dimensions for anisotropic calculations.
+        # Shape is (Z, Y, X), so sampling should match.
+        sampling = [config.voxel_z_um, config.voxel_y_um, config.voxel_x_um]
+        print(f"Using anisotropic sampling: {sampling}")
+    else:
+        sampling = [1, 1, 1]
+        print("Using isotropic sampling.")
+
+    # 2. Identify "receding" voxels in 3D
+    # A voxel is "receding" if it is empty (False) but was solid in a previous slice.
+    # We can find this by seeing if a cumulative max along the Z-axis is True where the volume is False.
+    solid_in_prior_slice = np.maximum.accumulate(volume_binary, axis=0)
+    receding_voxels = np.logical_and(solid_in_prior_slice, ~volume_binary)
+
+    if not np.any(receding_voxels):
+        print("No receding voxels found. Returning empty gradient.")
+        return np.zeros_like(volume_binary, dtype=np.float32)
+
+    # 3. Calculate the 3D distance transform from solid areas
+    # The distance transform is calculated on the inverse of the volume.
+    distance_map = ndimage.distance_transform_edt(
+        ~volume_binary,
+        sampling=sampling
+    )
+
+    # 4. Mask the distance map to only include receding areas
+    receding_distance_map = distance_map * receding_voxels
+
+    # 5. Label connected components in the receding areas
+    # This is the core of the "Enhanced EDT" logic, now in 3D.
+    labels, num_labels = ndimage.label(receding_voxels)
+    if num_labels == 0:
+        print("No connected components in receding areas. Returning empty gradient.")
+        return np.zeros_like(volume_binary, dtype=np.float32)
+
+    print(f"Found {num_labels} connected components in receding areas.")
+
+    # 6. Find the maximum distance value within each labeled component
+    max_vals_per_label = ndimage.maximum(
+        receding_distance_map,
+        labels=labels,
+        index=np.arange(1, num_labels + 1) # index must be 1-based
+    )
+
+    # 7. Create a lookup table for max values
+    # We add a 0 at the beginning for the background label (0).
+    max_vals_lut = np.concatenate(([0], max_vals_per_label))
+
+    # Create a map of max values, where each voxel's value is the max of its component
+    max_map = max_vals_lut[labels]
+
+    # 8. Normalize the gradient within each component
+    # Use the fade distance limit from the config
+    fade_distance_limit = config.fixed_fade_distance_receding
+    denominator = np.minimum(max_map, fade_distance_limit)
+    denominator = denominator.astype(np.float32)
+    denominator[denominator <= 0] = 1.0 # Avoid division by zero
+
+    clipped_map = np.clip(receding_distance_map, 0, denominator)
+    normalized_map = clipped_map / denominator
+
+    # 9. Invert the map (so edges are bright) and scale to 0-255
+    inverted_map = 1.0 - normalized_map
+    gradient_volume = (inverted_map * 255)
+
+    # 10. Final mask to ensure gradient is only in receding areas
+    final_gradient = gradient_volume * receding_voxels
+
+    print("Finished 3D Z-blending process.")
+    return final_gradient

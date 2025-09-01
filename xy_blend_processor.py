@@ -24,28 +24,69 @@ from typing import List, Optional
 import lut_manager
 from config import XYBlendOperation, LutParameters
 
-def apply_gaussian_blur(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
+def _anisotropic_resize(image, config, invert=False):
+    """Helper to resize image for anisotropic correction."""
+    if config.voxel_x_um == config.voxel_y_um:
+        return image # No correction needed if isotropic
+
+    min_dim = min(config.voxel_x_um, config.voxel_y_um)
+    x_factor = min_dim / config.voxel_x_um
+    y_factor = min_dim / config.voxel_y_um
+
+    original_height, original_width = image.shape[:2]
+
+    if invert:
+        # When inverting, the target is the original size
+        new_width = original_width
+        new_height = original_height
+        # Use a smoother interpolation when resizing back up
+        interp = cv2.INTER_LINEAR
+    else:
+        # Resize to make pixels isotropic
+        new_width = int(original_width * x_factor)
+        new_height = int(original_height * y_factor)
+        # Use area-based interpolation for downsampling
+        interp = cv2.INTER_AREA
+
+    return cv2.resize(image, (new_width, new_height), interpolation=interp)
+
+def apply_gaussian_blur(image: np.ndarray, op: XYBlendOperation, config: "Config") -> np.ndarray:
     """Applies Gaussian blur to an 8-bit grayscale image."""
     ksize_x = op.gaussian_ksize_x
     ksize_y = op.gaussian_ksize_y
     sigma_x = op.gaussian_sigma_x
     sigma_y = op.gaussian_sigma_y
-    return cv2.GaussianBlur(image, (ksize_x, ksize_y), sigmaX=sigma_x, sigmaY=sigma_y)
 
-def apply_bilateral_filter(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
+    if op.anisotropic_correction_enabled:
+        resized_image = _anisotropic_resize(image, config)
+        # When pixels are isotropic, use the same sigma for both axes, e.g., the average
+        avg_sigma = (sigma_x + sigma_y) / 2
+        blurred_resized = cv2.GaussianBlur(resized_image, (ksize_x, ksize_y), sigmaX=avg_sigma, sigmaY=avg_sigma)
+        return _anisotropic_resize(blurred_resized, config, invert=True)
+    else:
+        return cv2.GaussianBlur(image, (ksize_x, ksize_y), sigmaX=sigma_x, sigmaY=sigma_y)
+
+def apply_bilateral_filter(image: np.ndarray, op: XYBlendOperation, config: "Config") -> np.ndarray:
     """Applies a bilateral filter to an 8-bit grayscale image."""
     d = op.bilateral_d
     sigma_color = op.bilateral_sigma_color
     sigma_space = op.bilateral_sigma_space
-    return cv2.bilateralFilter(image, d, sigma_color, sigma_space)
 
-def apply_median_blur(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
+    if op.anisotropic_correction_enabled:
+        resized_image = _anisotropic_resize(image, config)
+        # Sigma space is a distance, so it should be applied to the isotropically-scaled image
+        filtered_resized = cv2.bilateralFilter(resized_image, d, sigma_color, sigma_space)
+        return _anisotropic_resize(filtered_resized, config, invert=True)
+    else:
+        return cv2.bilateralFilter(image, d, sigma_color, sigma_space)
+
+def apply_median_blur(image: np.ndarray, op: XYBlendOperation, config: "Config") -> np.ndarray:
     """Applies a median blur to an 8-bit grayscale image."""
     ksize = op.median_ksize
     if ksize <= 1: return image
     return cv2.medianBlur(image, ksize)
 
-def apply_unsharp_mask(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
+def apply_unsharp_mask(image: np.ndarray, op: XYBlendOperation, config: "Config") -> np.ndarray:
     """Applies unsharp masking to an 8-bit grayscale image for sharpening."""
     amount = op.unsharp_amount
     threshold = op.unsharp_threshold
@@ -66,7 +107,7 @@ def apply_unsharp_mask(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
     
     return sharpened_image
 
-def apply_resize(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
+def apply_resize(image: np.ndarray, op: XYBlendOperation, config: "Config") -> np.ndarray:
     """Resizes an image using the specified parameters."""
     width = op.resize_width
     height = op.resize_height
@@ -89,7 +130,7 @@ def apply_resize(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
     interp = flags.get(op.resample_mode.upper(), cv2.INTER_LANCZOS4)
     return cv2.resize(image, (width, height), interpolation=interp)
 
-def apply_lut_operation(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
+def apply_lut_operation(image: np.ndarray, op: XYBlendOperation, config: "Config") -> np.ndarray:
     """Generates/loads a LUT based on operation parameters and applies it."""
     lut_params = op.lut_params
     generated_lut: Optional[np.ndarray] = None
@@ -132,7 +173,7 @@ def apply_lut_operation(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
     return lut_manager.apply_z_lut(image, generated_lut)
 
 
-def process_xy_pipeline(image: np.ndarray, pipeline_ops: List[XYBlendOperation]) -> np.ndarray:
+def process_xy_pipeline(image: np.ndarray, pipeline_ops: List[XYBlendOperation], config: "Config") -> np.ndarray:
     """Applies the sequence of operations defined in the pipeline."""
     processed_image = image.copy()
 
@@ -152,7 +193,7 @@ def process_xy_pipeline(image: np.ndarray, pipeline_ops: List[XYBlendOperation])
     for op in pipeline_ops:
         op_func = op_map.get(op.type)
         if op_func:
-            processed_image = op_func(processed_image, op)
+            processed_image = op_func(processed_image, op, config)
         elif op.type != "none":
             print(f"Warning: Unknown XY blend operation type '{op.type}'. Skipping.")
         

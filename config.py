@@ -89,6 +89,7 @@ class XYBlendOperation:
     Represents a single operation in the XY image processing pipeline.
     """
     type: str = "none"
+    anisotropic_correction_enabled: bool = False
     gaussian_ksize_x: int = 3
     gaussian_ksize_y: int = 3
     gaussian_sigma_x: float = 0.0
@@ -151,14 +152,6 @@ class RoiParameters:
 
 
 @dataclass
-class AnisotropicParams:
-    """Parameters for anisotropic distance correction."""
-    enabled: bool = False
-    x_factor: float = 1.0
-    y_factor: float = 1.0
-
-
-@dataclass
 class Config:
     """
     Main application configuration, updated with new UI fields.
@@ -170,6 +163,9 @@ class Config:
     output_folder: str = ""
     start_index: Optional[int] = 0
     stop_index: Optional[int] = None
+    voxel_x_um: int = 19
+    voxel_y_um: int = 24
+    voxel_z_um: int = 50
     
     # --- UVTools Mode Settings ---
     uvtools_path: str = "C:\\Program Files\\UVTools\\UVToolsCmd.exe"
@@ -183,7 +179,7 @@ class Config:
     receding_layers: int = 4
     use_fixed_fade_receding: bool = False
     fixed_fade_distance_receding: float = 10.0
-    anisotropic_params: AnisotropicParams = field(default_factory=AnisotropicParams)
+    edt_anisotropic_correction: bool = False
     
     # --- Weighted Stack Mode Settings ---
     weighted_falloff_type: WeightingFalloff = WeightingFalloff.LINEAR
@@ -202,6 +198,8 @@ class Config:
     thread_count: int = DEFAULT_NUM_WORKERS
     use_numba_jit: bool = False
     debug_save: bool = False
+    use_zarr_pipeline: bool = False
+    save_zarr_to_disk: bool = False
     xy_blend_pipeline: List[XYBlendOperation] = field(default_factory=lambda: [XYBlendOperation("none")])
 
     def to_dict(self) -> dict:
@@ -252,11 +250,6 @@ class Config:
                         roi_field_names = {f.name for f in fields(RoiParameters)}
                         filtered_roi_data = {k: v for k, v in value.items() if k in roi_field_names}
                         setattr(config_instance, key, RoiParameters(**filtered_roi_data))
-                elif key == 'anisotropic_params':
-                    if isinstance(value, dict):
-                        anisotropic_field_names = {f.name for f in fields(AnisotropicParams)}
-                        filtered_anisotropic_data = {k: v for k, v in value.items() if k in anisotropic_field_names}
-                        setattr(config_instance, key, AnisotropicParams(**filtered_anisotropic_data))
                 else:
                     if field_obj.type is bool and isinstance(value, str):
                         value = value.lower() in ('true', '1', 't', 'y')
