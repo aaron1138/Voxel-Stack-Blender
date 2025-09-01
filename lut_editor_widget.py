@@ -87,11 +87,23 @@ class InteractiveMplCanvas(FigureCanvas):
             self._points_line.set_data([], [])
             
         self.axes.set_title("LUT Curve Preview")
-        self.axes.set_xlabel("Input Value (0-255)")
-        self.axes.set_ylabel("Output Value (0-255)")
+        # Default labels are set here but can be overridden by set_axis_labels
+        if not hasattr(self, '_custom_x_label'):
+            self.axes.set_xlabel("Input Value (0-255)")
+        if not hasattr(self, '_custom_y_label'):
+            self.axes.set_ylabel("Output Value (0-255)")
+
         self.axes.set_xlim(0, 255)
         self.axes.set_ylim(0, 255)
         self.axes.grid(True)
+        self.draw()
+
+    def set_axis_labels(self, x_label: str, y_label: str):
+        """Sets custom labels for the plot's axes."""
+        self._custom_x_label = x_label
+        self._custom_y_label = y_label
+        self.axes.set_xlabel(x_label)
+        self.axes.set_ylabel(y_label)
         self.draw()
 
     def get_points(self) -> List[List[int]]:
@@ -141,7 +153,7 @@ class LutEditorWidget(QWidget):
     lut_params_changed = Signal()
     toggle_table_visibility_requested = Signal(bool)
 
-    def __init__(self, parent_tab):
+    def __init__(self, parent_tab=None):
         super().__init__()
         self.parent_tab = parent_tab
         self._lut_params = None
@@ -332,7 +344,8 @@ class LutEditorWidget(QWidget):
         points_to_show = self._lut_params.spline_points if is_spline_mode else None
         self.preview_canvas.set_interactive(is_spline_mode)
         self.preview_canvas.update_plot(curve_data=generated_lut, points_data=points_to_show)
-        self.parent_tab._update_lut_table(generated_lut)
+        if self.parent_tab:
+            self.parent_tab._update_lut_table(generated_lut)
 
     def _load_lut_from_file(self):
         filepath, _ = QFileDialog.getOpenFileName(self, "Load LUT File", "", "JSON Files (*.json)")

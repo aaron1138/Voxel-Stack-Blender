@@ -24,6 +24,9 @@ import math
 from typing import Optional, Callable, List
 from scipy.interpolate import CubicSpline # NEW: Add SciPy for spline interpolation
 
+# Import LutParameters for the new generator function
+from config import LutParameters
+
 _DEFAULT_Z_REMAP_LUT_ARRAY = np.arange(256, dtype=np.uint8)
 
 def get_default_z_lut() -> np.ndarray:
@@ -167,3 +170,49 @@ def generate_spline_lut(control_points: List[List[int]], input_min: int, input_m
 
     # The curve function is now our spline
     return _generate_curve_in_range(spline, input_min, input_max, output_min, output_max)
+
+def generate_lut_from_params(lut_params: LutParameters) -> Optional[np.ndarray]:
+    """
+    Generates or loads a LUT array based on the provided LutParameters object.
+    This centralizes the LUT generation logic.
+    """
+    if not lut_params:
+        return None
+    try:
+        if lut_params.lut_source == "generated":
+            args = (lut_params.input_min, lut_params.input_max, lut_params.output_min, lut_params.output_max)
+            gen_type = lut_params.lut_generation_type
+
+            if gen_type == "spline":
+                return generate_spline_lut(lut_params.spline_points, *args)
+            elif gen_type == "linear":
+                return generate_linear_lut(*args)
+            elif gen_type == "gamma":
+                return generate_gamma_lut(lut_params.gamma_value, *args)
+            elif gen_type == "s_curve":
+                return generate_s_curve_lut(lut_params.s_curve_contrast, *args)
+            elif gen_type == "log":
+                return generate_log_lut(lut_params.log_param, *args)
+            elif gen_type == "exp":
+                return generate_exp_lut(lut_params.exp_param, *args)
+            elif gen_type == "sqrt":
+                return generate_sqrt_lut(lut_params.sqrt_param, *args)
+            elif gen_type == "rodbard":
+                return generate_rodbard_lut(lut_params.rodbard_param, *args)
+            else:
+                # Default to linear if type is unknown
+                return generate_linear_lut(*args)
+
+        elif lut_params.lut_source == "file":
+            if lut_params.fixed_lut_path and os.path.exists(lut_params.fixed_lut_path):
+                return load_lut(lut_params.fixed_lut_path)
+            else:
+                # Return a default pass-through LUT if file path is invalid
+                return get_default_z_lut()
+
+    except Exception as e:
+        print(f"Error generating LUT from parameters: {e}")
+        # Return a default pass-through LUT on any error
+        return get_default_z_lut()
+
+    return get_default_z_lut()

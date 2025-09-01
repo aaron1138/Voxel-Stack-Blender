@@ -24,6 +24,7 @@ from scipy import ndimage
 import numba
 
 from config import ProcessingMode
+from lut_manager import generate_lut_from_params
 
 def load_image(filepath):
     """
@@ -404,6 +405,73 @@ def _calculate_receding_gradient_field_enhanced_edt(current_white_mask, prior_bi
     return cv2.bitwise_and(final_gradient_map, final_gradient_map, mask=receding_white_areas)
 
 
+@numba.jit(nopython=True, cache=True)
+def _apply_distance_lut_numba(receding_distance_map, lut):
+    """
+    Applies a 256-entry LUT to a distance map. The distance value is used as
+    an index into the LUT.
+    """
+    final_gradient_map = np.zeros_like(receding_distance_map, dtype=np.uint8)
+    for y in range(receding_distance_map.shape[0]):
+        for x in range(receding_distance_map.shape[1]):
+            dist = receding_distance_map[y, x]
+            if dist > 0:
+                # Round to nearest int and clamp to 0-255 for LUT index
+                lut_index = int(round(dist))
+                if lut_index > 255:
+                    lut_index = 255
+
+                final_gradient_map[y, x] = lut[lut_index]
+    return final_gradient_map
+
+
+def _calculate_receding_gradient_field_enhanced_edt_v2(current_white_mask, prior_binary_masks, config, debug_info=None):
+    """
+    Calculates a gradient field using a user-defined distance-to-gradient LUT,
+    offering direct control over the gradient profile based on absolute distance.
+    """
+    if not prior_binary_masks:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    distance_lut = generate_lut_from_params(config.eedt_v2_lut)
+    if distance_lut is None:
+        distance_lut = np.arange(256, dtype=np.uint8) # Fallback
+
+    prior_white_combined_mask = find_prior_combined_white_mask(prior_binary_masks)
+    if prior_white_combined_mask is None:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    receding_white_areas = cv2.bitwise_and(prior_white_combined_mask, cv2.bitwise_not(current_white_mask))
+    if cv2.countNonZero(receding_white_areas) == 0:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    distance_transform_src = cv2.bitwise_not(current_white_mask)
+
+    # --- Anisotropic Correction (copied from standard EEDT) ---
+    if config.anisotropic_params.enabled:
+        ap = config.anisotropic_params
+        original_height, original_width = distance_transform_src.shape
+        x_factor = max(0.1, min(10.0, ap.x_factor))
+        y_factor = max(0.1, min(10.0, ap.y_factor))
+        if x_factor != 1.0 or y_factor != 1.0:
+            new_width = int(original_width * x_factor)
+            new_height = int(original_height * y_factor)
+            resized_src = cv2.resize(distance_transform_src, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
+            resized_dist_map = cv2.distanceTransform(resized_src, cv2.DIST_L2, 5)
+            distance_map = cv2.resize(resized_dist_map, (original_width, original_height), interpolation=cv2.INTER_LINEAR)
+        else:
+            distance_map = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5)
+    else:
+        distance_map = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5)
+
+    receding_distance_map = cv2.bitwise_and(distance_map, distance_map, mask=receding_white_areas)
+
+    # Apply the LUT using the Numba-jitted function
+    final_gradient_map = _apply_distance_lut_numba(receding_distance_map, distance_lut)
+
+    return cv2.bitwise_and(final_gradient_map, final_gradient_map, mask=receding_white_areas)
+
+
 def process_z_blending(current_white_mask, prior_masks, config, classified_rois, debug_info=None):
     """
     Main entry point for Z-axis blending. Dispatches to the correct blending mode.
@@ -426,6 +494,13 @@ def process_z_blending(current_white_mask, prior_masks, config, classified_rois,
         )
     elif config.blending_mode == ProcessingMode.ENHANCED_EDT:
         return _calculate_receding_gradient_field_enhanced_edt(
+            current_white_mask,
+            prior_masks,
+            config,
+            debug_info
+        )
+    elif config.blending_mode == ProcessingMode.ENHANCED_EDT_V2:
+        return _calculate_receding_gradient_field_enhanced_edt_v2(
             current_white_mask,
             prior_masks,
             config,

@@ -34,6 +34,7 @@ from config import (
     ProcessingMode, WeightingFalloff
 )
 from pyside_xy_blend_tab import XYBlendTab
+from lut_editor_widget import LutEditorWidget
 from processing_pipeline import ProcessingPipelineThread
 
 class ImageProcessorApp(QWidget):
@@ -156,6 +157,7 @@ class ImageProcessorApp(QWidget):
         blending_mode_layout.addWidget(QLabel("Blending Mode:"))
         self.blending_mode_combo = QComboBox()
         self.blending_mode_combo.addItem("Enhanced EDT", ProcessingMode.ENHANCED_EDT)
+        self.blending_mode_combo.addItem("Enhanced EDT v2", ProcessingMode.ENHANCED_EDT_V2)
         self.blending_mode_combo.addItem("Fixed Fade", ProcessingMode.FIXED_FADE)
         self.blending_mode_combo.addItem("ROI Mode (Slow)", ProcessingMode.ROI_FADE)
         blending_mode_layout.addWidget(self.blending_mode_combo)
@@ -198,6 +200,14 @@ class ImageProcessorApp(QWidget):
         common_blending_layout.addWidget(anisotropic_widget, 2, 0, 1, 3)
 
         blending_layout.addLayout(common_blending_layout)
+
+        self.eedt_v2_lut_editor_group = QGroupBox("Enhanced EDT v2: Distance-to-Gradient LUT")
+        self.eedt_v2_lut_editor_group.setVisible(False)
+        eedt_v2_layout = QVBoxLayout(self.eedt_v2_lut_editor_group)
+        self.eedt_v2_lut_editor = LutEditorWidget()
+        self.eedt_v2_lut_editor.preview_canvas.set_axis_labels("Distance (px)", "Gradient Value")
+        eedt_v2_layout.addWidget(self.eedt_v2_lut_editor)
+        blending_layout.addWidget(self.eedt_v2_lut_editor_group)
 
         # The stacked widget is no longer needed, but we still need the ROI-specific settings.
         # We can show/hide them based on the combo box selection.
@@ -299,6 +309,7 @@ class ImageProcessorApp(QWidget):
         self.uvtools_input_file_button.clicked.connect(lambda: self.browse_file(self.uvtools_input_file_edit, "Select Input Slice File"))
         self.input_mode_group.idClicked.connect(self.on_input_mode_changed)
         self.blending_mode_combo.currentIndexChanged.connect(self.on_blending_mode_changed)
+        self.eedt_v2_lut_editor.lut_params_changed.connect(self.on_eedt_v2_lut_changed)
         self.save_config_button.clicked.connect(self._save_config_to_file)
         self.load_config_button.clicked.connect(self._load_config_from_file)
         self.start_stop_button.clicked.connect(self.toggle_processing)
@@ -310,6 +321,13 @@ class ImageProcessorApp(QWidget):
             if not self.uvtools_path_edit.text():
                 self.uvtools_path_edit.setText(default_path)
 
+    def on_eedt_v2_lut_changed(self):
+        # This is called when the LUT editor's params change.
+        # The editor modifies the config object directly, so we just need to ensure
+        # that the application knows a change has occurred if we want to prompt to save, etc.
+        # For now, just plotting the LUT is enough, which the widget does internally.
+        pass
+
     def on_input_mode_changed(self, stack_index):
         self.io_stacked_widget.setCurrentIndex(stack_index)
 
@@ -317,13 +335,11 @@ class ImageProcessorApp(QWidget):
         selected_mode = self.blending_mode_combo.itemData(index)
 
         # Show/hide ROI settings
-        if selected_mode == ProcessingMode.ROI_FADE:
-            self.roi_settings_group.setVisible(True)
-        else:
-            self.roi_settings_group.setVisible(False)
+        self.roi_settings_group.setVisible(selected_mode == ProcessingMode.ROI_FADE)
+        self.eedt_v2_lut_editor_group.setVisible(selected_mode == ProcessingMode.ENHANCED_EDT_V2)
 
         # Update fade distance label text
-        if selected_mode == ProcessingMode.ENHANCED_EDT:
+        if selected_mode in [ProcessingMode.ENHANCED_EDT, ProcessingMode.ENHANCED_EDT_V2]:
             self.fade_dist_label.setText("Max Fade (pixels):")
         else:
             self.fade_dist_label.setText("Fade Distance (pixels):")
@@ -365,6 +381,7 @@ class ImageProcessorApp(QWidget):
         index = self.blending_mode_combo.findData(config.blending_mode)
         self.blending_mode_combo.setCurrentIndex(index if index >= 0 else 0)
         self.on_blending_mode_changed(self.blending_mode_combo.currentIndex())
+        self.eedt_v2_lut_editor.set_lut_params(config.eedt_v2_lut)
 
         # --- ROI Settings ---
         self.roi_min_size_edit.setText(str(config.roi_params.min_size))
