@@ -24,6 +24,11 @@ import math
 from typing import Optional, Callable, List
 from scipy.interpolate import CubicSpline # NEW: Add SciPy for spline interpolation
 
+# Use a forward reference for type hinting to avoid circular import
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from config import LutParameters
+
 _DEFAULT_Z_REMAP_LUT_ARRAY = np.arange(256, dtype=np.uint8)
 
 def get_default_z_lut() -> np.ndarray:
@@ -167,3 +172,35 @@ def generate_spline_lut(control_points: List[List[int]], input_min: int, input_m
 
     # The curve function is now our spline
     return _generate_curve_in_range(spline, input_min, input_max, output_min, output_max)
+
+def get_lut_from_params(params: 'LutParameters') -> np.ndarray:
+    """
+    Resolves LutParameters into a 256-entry numpy array, either by loading
+    from a file or generating algorithmically.
+    """
+    if params.lut_source == "file":
+        try:
+            return load_lut(params.fixed_lut_path)
+        except (FileNotFoundError, ValueError, IOError) as e:
+            print(f"Warning: Failed to load LUT from '{params.fixed_lut_path}': {e}. Returning default linear LUT.")
+            return get_default_z_lut()
+
+    # --- Generation ---
+    gen_map = {
+        "linear": lambda p: generate_linear_lut(p.input_min, p.input_max, p.output_min, p.output_max),
+        "gamma": lambda p: generate_gamma_lut(p.gamma_value, p.input_min, p.input_max, p.output_min, p.output_max),
+        "s_curve": lambda p: generate_s_curve_lut(p.s_curve_contrast, p.input_min, p.input_max, p.output_min, p.output_max),
+        "log": lambda p: generate_log_lut(p.log_param, p.input_min, p.input_max, p.output_min, p.output_max),
+        "exp": lambda p: generate_exp_lut(p.exp_param, p.input_min, p.input_max, p.output_min, p.output_max),
+        "sqrt": lambda p: generate_sqrt_lut(p.sqrt_param, p.input_min, p.input_max, p.output_min, p.output_max),
+        "rodbard": lambda p: generate_rodbard_lut(p.rodbard_param, p.input_min, p.input_max, p.output_min, p.output_max),
+        "spline": lambda p: generate_spline_lut(p.spline_points, p.input_min, p.input_max, p.output_min, p.output_max)
+    }
+
+    generator_func = gen_map.get(params.lut_generation_type)
+
+    if generator_func:
+        return generator_func(params)
+    else:
+        print(f"Warning: Unknown LUT generation type '{params.lut_generation_type}'. Returning default linear LUT.")
+        return generate_linear_lut(params.input_min, params.input_max, params.output_min, params.output_max)

@@ -29,6 +29,7 @@ DEFAULT_NUM_WORKERS = max(1, os.cpu_count() - 1)
 
 class ProcessingMode(Enum):
     ENHANCED_EDT = "enhanced_edt"
+    ENHANCED_EDT_V2 = "enhanced_edt_v2"
     FIXED_FADE = "fixed_fade"
     ROI_FADE = "roi_fade"
     WEIGHTED_STACK = "weighted_stack"
@@ -157,6 +158,11 @@ class AnisotropicParams:
     x_factor: float = 1.0
     y_factor: float = 1.0
 
+@dataclass
+class EEDTv2Parameters:
+    """Parameters for the Enhanced EDT v2 processing mode."""
+    lut_params: LutParameters = field(default_factory=LutParameters)
+
 
 @dataclass
 class Config:
@@ -184,6 +190,9 @@ class Config:
     use_fixed_fade_receding: bool = False
     fixed_fade_distance_receding: float = 10.0
     anisotropic_params: AnisotropicParams = field(default_factory=AnisotropicParams)
+
+    # --- EEDT v2 Specific Settings ---
+    eedt_v2_params: EEDTv2Parameters = field(default_factory=EEDTv2Parameters)
     
     # --- Weighted Stack Mode Settings ---
     weighted_falloff_type: WeightingFalloff = WeightingFalloff.LINEAR
@@ -257,6 +266,13 @@ class Config:
                         anisotropic_field_names = {f.name for f in fields(AnisotropicParams)}
                         filtered_anisotropic_data = {k: v for k, v in value.items() if k in anisotropic_field_names}
                         setattr(config_instance, key, AnisotropicParams(**filtered_anisotropic_data))
+                elif key == 'eedt_v2_params':
+                    if isinstance(value, dict):
+                        eedtv2_field_names = {f.name for f in fields(EEDTv2Parameters)}
+                        filtered_eedtv2_data = {k: v for k, v in value.items() if k in eedtv2_field_names}
+                        if 'lut_params' in filtered_eedtv2_data and isinstance(filtered_eedtv2_data['lut_params'], dict):
+                            filtered_eedtv2_data['lut_params'] = XYBlendOperation.from_dict_to_lut_params(filtered_eedtv2_data['lut_params'])
+                        setattr(config_instance, key, EEDTv2Parameters(**filtered_eedtv2_data))
                 else:
                     if field_obj.type is bool and isinstance(value, str):
                         value = value.lower() in ('true', '1', 't', 'y')

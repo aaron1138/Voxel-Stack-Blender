@@ -7,7 +7,7 @@ import pytest
 # Add the root directory to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from config import Config, ProcessingMode
+from config import Config, ProcessingMode, LutParameters
 from processing_core import (
     _calculate_weighted_receding_gradient_field, find_prior_combined_white_mask,
     _calculate_receding_gradient_field_enhanced_edt_scipy,
@@ -194,3 +194,62 @@ def test_anisotropic_correction(base_config):
     # Check that some gradient exists
     assert val_x > 0
     assert val_y > 0
+
+@pytest.fixture
+def eedt_v2_config(base_config):
+    """Fixture to create a config for EEDT v2 tests."""
+    cfg = base_config
+    cfg.blending_mode = ProcessingMode.ENHANCED_EDT_V2
+    # Use a simple linear ramp-up LUT for predictability.
+    # This means gradient value should be proportional to distance.
+    cfg.eedt_v2_params.lut_params = LutParameters(
+        lut_source="generated",
+        lut_generation_type="linear",
+        input_min=0,
+        input_max=255,
+        output_min=0,
+        output_max=255
+    )
+    # This now defines the distance that maps to the end of the LUT
+    cfg.fixed_fade_distance_receding = 10.0
+    return cfg
+
+def test_enhanced_edt_v2_lut_logic(eedt_v2_config):
+    """
+    Tests that the Enhanced EDT v2 mode correctly applies a distance-based LUT.
+    """
+    # 1. Setup
+    cfg = eedt_v2_config
+
+    current_mask = np.zeros((100, 100), dtype=np.uint8)
+    cv2.rectangle(current_mask, (45, 45), (55, 55), 255, -1)
+
+    prior_mask = np.zeros_like(current_mask)
+    cv2.rectangle(prior_mask, (30, 30), (70, 70), 255, -1)
+
+    # We need to call the full dispatcher to test the LUT fetching logic
+    from processing_core import _calculate_receding_gradient_field_enhanced_edt_v2
+
+    # 2. Execution
+    gradient = _calculate_receding_gradient_field_enhanced_edt_v2(current_mask, [prior_mask], cfg)
+
+    # 3. Assertions
+    # Point close to the edge (dist ~3 pixels from the 45-pixel boundary)
+    # expected_index = round((3 / 10.0) * 255) = 77
+    # LUT is linear, so value should be around 77
+    point_near = (50, 42)
+    val_near = gradient[point_near]
+    assert 75 < val_near < 80, f"Value at {point_near} was {val_near}, expected ~77"
+
+    # Point further away (dist ~8 pixels from the 45-pixel boundary)
+    # expected_index = round((8 / 10.0) * 255) = 204
+    # LUT is linear, so value should be around 204
+    point_far = (50, 37)
+    val_far = gradient[point_far]
+    assert 200 < val_far < 210, f"Value at {point_far} was {val_far}, expected ~204"
+
+    # Point beyond the fade distance limit (dist ~12 pixels)
+    # Should be clamped to the max value of the LUT (255)
+    point_beyond = (50, 33)
+    val_beyond = gradient[point_beyond]
+    assert val_beyond == 255, f"Value at {point_beyond} was {val_beyond}, expected 255"
