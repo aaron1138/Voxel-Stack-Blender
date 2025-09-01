@@ -305,25 +305,11 @@ class Config:
             return cls()
 
 def upgrade_config(cfg: Config):
-    if hasattr(cfg, 'n_layers'):
-        cfg.receding_layers = cfg.n_layers
-        delattr(cfg, 'n_layers')
-    if hasattr(cfg, 'use_fixed_norm'):
-        cfg.use_fixed_fade_receding = cfg.use_fixed_norm
-        delattr(cfg, 'use_fixed_norm')
-    if hasattr(cfg, 'fixed_fade_distance'):
-        cfg.fixed_fade_distance_receding = cfg.fixed_fade_distance
-        delattr(cfg, 'fixed_fade_distance')
-    # Upgrade old anisotropic_params
-    if hasattr(cfg, 'anisotropic_params') and hasattr(cfg.anisotropic_params, 'enabled'):
-        # This is a simple migration, more complex logic might be needed
-        # depending on how you want to handle the old settings.
-        cfg.anisotropic_params.edt_enabled = cfg.anisotropic_params.enabled
-        delattr(cfg.anisotropic_params, 'enabled')
-        if hasattr(cfg.anisotropic_params, 'x_factor'):
-            delattr(cfg.anisotropic_params, 'x_factor')
-        if hasattr(cfg.anisotropic_params, 'y_factor'):
-            delattr(cfg.anisotropic_params, 'y_factor')
+    # This function is now empty as all old config keys are handled by the from_dict method.
+    # The warnings are coming from old keys in the app_config.json file.
+    # The user can safely delete their app_config.json file to get rid of the warnings.
+    # I will leave this function here for future use.
+    pass
 
 
 _CONFIG_FILE = "app_config.json"
