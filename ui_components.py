@@ -35,6 +35,7 @@ from config import (
 )
 from pyside_xy_blend_tab import XYBlendTab
 from processing_pipeline import ProcessingPipelineThread
+from zarr_processing_pipeline import ZarrProcessingPipelineThread
 
 class ImageProcessorApp(QWidget):
     """The main application window, now with a restructured UI."""
@@ -176,26 +177,27 @@ class ImageProcessorApp(QWidget):
 
         common_blending_layout.setColumnStretch(2, 1)
 
-        # --- Anisotropic Correction ---
-        anisotropic_widget = QWidget()
-        anisotropic_layout = QHBoxLayout(anisotropic_widget)
-        anisotropic_layout.setContentsMargins(0, 0, 0, 0)
-        self.anisotropic_checkbox = QCheckBox("Enable Anisotropic Distance Correction")
-        anisotropic_layout.addWidget(self.anisotropic_checkbox)
-        anisotropic_layout.addWidget(QLabel("X Factor:"))
-        self.anisotropic_x_edit = QLineEdit("1.0")
-        self.anisotropic_x_edit.setValidator(QDoubleValidator(0.1, 10.0, 2, self))
-        self.anisotropic_x_edit.setFixedWidth(50)
-        anisotropic_layout.addWidget(self.anisotropic_x_edit)
-        anisotropic_layout.addWidget(QLabel("Y Factor:"))
-        self.anisotropic_y_edit = QLineEdit("1.0")
-        self.anisotropic_y_edit.setValidator(QDoubleValidator(0.1, 10.0, 2, self))
-        self.anisotropic_y_edit.setFixedWidth(50)
-        anisotropic_layout.addWidget(self.anisotropic_y_edit)
-        anisotropic_layout.addStretch(1)
+        # --- Voxel Dimensions ---
+        voxel_dims_group = QGroupBox("Voxel Dimensions (um)")
+        voxel_dims_layout = QGridLayout(voxel_dims_group)
 
-        # Add the new row of widgets to the grid layout
-        common_blending_layout.addWidget(anisotropic_widget, 2, 0, 1, 3)
+        voxel_dims_layout.addWidget(QLabel("X:"), 0, 0)
+        self.voxel_x_edit = QLineEdit("20")
+        self.voxel_x_edit.setValidator(QIntValidator(1, 100, self))
+        voxel_dims_layout.addWidget(self.voxel_x_edit, 0, 1)
+
+        voxel_dims_layout.addWidget(QLabel("Y:"), 0, 2)
+        self.voxel_y_edit = QLineEdit("20")
+        self.voxel_y_edit.setValidator(QIntValidator(1, 100, self))
+        voxel_dims_layout.addWidget(self.voxel_y_edit, 0, 3)
+
+        voxel_dims_layout.addWidget(QLabel("Z:"), 0, 4)
+        self.voxel_z_edit = QLineEdit("50")
+        self.voxel_z_edit.setValidator(QIntValidator(1, 100, self))
+        voxel_dims_layout.addWidget(self.voxel_z_edit, 0, 5)
+
+        voxel_dims_layout.setColumnStretch(6, 1)
+        io_layout.addWidget(voxel_dims_group)
 
         blending_layout.addLayout(common_blending_layout)
 
@@ -266,6 +268,12 @@ class ImageProcessorApp(QWidget):
 
         self.debug_checkbox = QCheckBox("Save Intermediate Debug Images")
         general_layout.addWidget(self.debug_checkbox)
+
+        self.zarr_checkbox = QCheckBox("Use Zarr Voxel Data Store (Experimental)")
+        general_layout.addWidget(self.zarr_checkbox)
+
+        self.zarr_save_checkbox = QCheckBox("Save Zarr Data Store to disk (Debugging)")
+        general_layout.addWidget(self.zarr_save_checkbox)
         
         config_buttons_layout = QHBoxLayout()
         self.save_config_button = QPushButton("Save Config...")
@@ -357,9 +365,9 @@ class ImageProcessorApp(QWidget):
         self.uvtools_output_input_radio.setChecked(config.uvtools_output_location == "input_folder")
         self.receding_layers_edit.setText(str(config.receding_layers))
         self.fade_dist_receding_edit.setText(str(config.fixed_fade_distance_receding))
-        self.anisotropic_checkbox.setChecked(config.anisotropic_params.enabled)
-        self.anisotropic_x_edit.setText(str(config.anisotropic_params.x_factor))
-        self.anisotropic_y_edit.setText(str(config.anisotropic_params.y_factor))
+        self.voxel_x_edit.setText(str(config.voxel_x_um))
+        self.voxel_y_edit.setText(str(config.voxel_y_um))
+        self.voxel_z_edit.setText(str(config.voxel_z_um))
 
         # --- Blending Mode Loading ---
         index = self.blending_mode_combo.findData(config.blending_mode)
@@ -438,16 +446,19 @@ class ImageProcessorApp(QWidget):
         try: config.fixed_fade_distance_receding = float(self.fade_dist_receding_edit.text().replace(',', '.'))
         except ValueError: config.fixed_fade_distance_receding = 10.0
 
-        config.anisotropic_params.enabled = self.anisotropic_checkbox.isChecked()
-        try: config.anisotropic_params.x_factor = float(self.anisotropic_x_edit.text().replace(',', '.'))
-        except ValueError: config.anisotropic_params.x_factor = 1.0
-        try: config.anisotropic_params.y_factor = float(self.anisotropic_y_edit.text().replace(',', '.'))
-        except ValueError: config.anisotropic_params.y_factor = 1.0
+        try: config.voxel_x_um = int(self.voxel_x_edit.text())
+        except ValueError: config.voxel_x_um = 20
+        try: config.voxel_y_um = int(self.voxel_y_edit.text())
+        except ValueError: config.voxel_y_um = 20
+        try: config.voxel_z_um = int(self.voxel_z_edit.text())
+        except ValueError: config.voxel_z_um = 50
 
         try: config.thread_count = int(self.thread_count_edit.text())
         except ValueError: config.thread_count = DEFAULT_NUM_WORKERS
         config.use_numba_jit = self.numba_checkbox.isChecked()
         config.debug_save = self.debug_checkbox.isChecked()
+        config.use_zarr = self.zarr_checkbox.isChecked()
+        config.save_zarr = self.zarr_save_checkbox.isChecked()
         
         config.save("app_config.json")
 
@@ -508,7 +519,10 @@ class ImageProcessorApp(QWidget):
                     raise ValueError("Input Slice File is not valid.")
             
             self.set_ui_enabled(False)
-            self.processor_thread = ProcessingPipelineThread(app_config=config, max_workers=config.thread_count)
+            if config.use_zarr:
+                self.processor_thread = ZarrProcessingPipelineThread(app_config=config, max_workers=config.thread_count)
+            else:
+                self.processor_thread = ProcessingPipelineThread(app_config=config, max_workers=config.thread_count)
             self.processor_thread.status_update.connect(self.update_status)
             self.processor_thread.progress_update.connect(self.progress_bar.setValue)
             self.processor_thread.error_signal.connect(self.show_error)

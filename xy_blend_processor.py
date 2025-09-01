@@ -22,28 +22,83 @@ import numpy as np
 import os
 from typing import List, Optional
 import lut_manager
-from config import XYBlendOperation, LutParameters
+from config import XYBlendOperation, LutParameters, app_config
+
+def _apply_anisotropic_blur(image: np.ndarray, blur_function, *args, **kwargs):
+    """
+    Wrapper to apply a blur function with anisotropic correction.
+    Resizes the image to be isotropic, applies the blur, and resizes back.
+    """
+    if app_config.voxel_x_um <= 0 or app_config.voxel_y_um <= 0:
+        return blur_function(image, *args, **kwargs)
+
+    aspect_ratio = app_config.voxel_y_um / app_config.voxel_x_um
+    if abs(aspect_ratio - 1.0) < 0.01:
+        return blur_function(image, *args, **kwargs)
+
+    original_height, original_width = image.shape
+    new_width = int(original_width * aspect_ratio)
+
+    resized_image = cv2.resize(image, (new_width, original_height), interpolation=cv2.INTER_LINEAR)
+
+    # We need to adjust the kernel size for the resized dimension
+    # For simplicity, we can scale the kernel width, or use an average kernel size.
+    # Let's adjust the kernel width in kwargs if it exists.
+    new_kwargs = kwargs.copy()
+    if 'ksize' in new_kwargs and isinstance(new_kwargs['ksize'], tuple):
+        kx, ky = new_kwargs['ksize']
+        new_kx = int(kx * aspect_ratio)
+        new_kx = new_kx if new_kx % 2 != 0 else new_kx + 1 # Ensure odd
+        new_kwargs['ksize'] = (new_kx, ky)
+
+    blurred_resized = blur_function(resized_image, *args, **new_kwargs)
+
+    return cv2.resize(blurred_resized, (original_width, original_height), interpolation=cv2.INTER_LINEAR)
+
 
 def apply_gaussian_blur(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
     """Applies Gaussian blur to an 8-bit grayscale image."""
-    ksize_x = op.gaussian_ksize_x
-    ksize_y = op.gaussian_ksize_y
+    ksize = (op.gaussian_ksize_x, op.gaussian_ksize_y)
     sigma_x = op.gaussian_sigma_x
     sigma_y = op.gaussian_sigma_y
-    return cv2.GaussianBlur(image, (ksize_x, ksize_y), sigmaX=sigma_x, sigmaY=sigma_y)
+
+    if op.anisotropic_correction:
+        return _apply_anisotropic_blur(image, cv2.GaussianBlur, ksize=ksize, sigmaX=sigma_x, sigmaY=sigma_y, borderType=cv2.BORDER_DEFAULT)
+    else:
+        return cv2.GaussianBlur(image, ksize, sigmaX=sigma_x, sigmaY=sigma_y)
 
 def apply_bilateral_filter(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
     """Applies a bilateral filter to an 8-bit grayscale image."""
     d = op.bilateral_d
     sigma_color = op.bilateral_sigma_color
     sigma_space = op.bilateral_sigma_space
-    return cv2.bilateralFilter(image, d, sigma_color, sigma_space)
+
+    if op.anisotropic_correction:
+        # Note: Anisotropic correction for bilateral filter is complex.
+        # Resizing before and after is a simplification and may not be physically accurate.
+        # The 'sigmaSpace' parameter is the one affected by geometric distortion.
+        return _apply_anisotropic_blur(image, cv2.bilateralFilter, d=d, sigmaColor=sigma_color, sigmaSpace=sigma_space)
+    else:
+        return cv2.bilateralFilter(image, d, sigma_color, sigma_space)
+
 
 def apply_median_blur(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
     """Applies a median blur to an 8-bit grayscale image."""
     ksize = op.median_ksize
     if ksize <= 1: return image
-    return cv2.medianBlur(image, ksize)
+
+    if op.anisotropic_correction:
+        # For median blur, we need to adjust the kernel size for the anisotropic dimension.
+        if app_config.voxel_x_um > 0 and app_config.voxel_y_um > 0:
+            aspect_ratio = app_config.voxel_y_um / app_config.voxel_x_um
+            if abs(aspect_ratio - 1.0) > 0.01:
+                # This is a simplification. A proper anisotropic median filter is non-trivial.
+                # We will use an elliptical kernel, but OpenCV's medianBlur only supports square kernels.
+                # As a proxy, we resize, blur with original kernel, and resize back.
+                return _apply_anisotropic_blur(image, cv2.medianBlur, ksize=ksize)
+        return cv2.medianBlur(image, ksize) # Fallback if no correction needed
+    else:
+        return cv2.medianBlur(image, ksize)
 
 def apply_unsharp_mask(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
     """Applies unsharp masking to an 8-bit grayscale image for sharpening."""

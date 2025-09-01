@@ -104,6 +104,7 @@ class XYBlendOperation:
     resize_width: Optional[int] = None
     resize_height: Optional[int] = None
     resample_mode: str = "LANCZOS4"
+    anisotropic_correction: bool = False
     lut_params: LutParameters = field(default_factory=LutParameters)
 
     def __post_init__(self):
@@ -151,14 +152,6 @@ class RoiParameters:
 
 
 @dataclass
-class AnisotropicParams:
-    """Parameters for anisotropic distance correction."""
-    enabled: bool = False
-    x_factor: float = 1.0
-    y_factor: float = 1.0
-
-
-@dataclass
 class Config:
     """
     Main application configuration, updated with new UI fields.
@@ -183,7 +176,11 @@ class Config:
     receding_layers: int = 4
     use_fixed_fade_receding: bool = False
     fixed_fade_distance_receding: float = 10.0
-    anisotropic_params: AnisotropicParams = field(default_factory=AnisotropicParams)
+
+    # Voxel Dimensions
+    voxel_x_um: int = 20
+    voxel_y_um: int = 20
+    voxel_z_um: int = 50
     
     # --- Weighted Stack Mode Settings ---
     weighted_falloff_type: WeightingFalloff = WeightingFalloff.LINEAR
@@ -202,6 +199,8 @@ class Config:
     thread_count: int = DEFAULT_NUM_WORKERS
     use_numba_jit: bool = False
     debug_save: bool = False
+    use_zarr: bool = False
+    save_zarr: bool = False
     xy_blend_pipeline: List[XYBlendOperation] = field(default_factory=lambda: [XYBlendOperation("none")])
 
     def to_dict(self) -> dict:

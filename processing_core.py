@@ -353,26 +353,24 @@ def _calculate_receding_gradient_field_enhanced_edt(current_white_mask, prior_bi
 
     distance_transform_src = cv2.bitwise_not(current_white_mask)
 
-    # --- Anisotropic Correction ---
-    if config.anisotropic_params.enabled:
-        ap = config.anisotropic_params
-        original_height, original_width = distance_transform_src.shape
+    # --- Anisotropic Correction for Z-axis blending ---
+    # This correction is always enabled for Enhanced EDT mode, as it's fundamental to its operation
+    avg_xy_dim = (config.voxel_x_um + config.voxel_y_um) / 2.0
+    if config.voxel_z_um > 0 and avg_xy_dim > 0.0:
+        z_anisotropy_factor = config.voxel_z_um / avg_xy_dim
 
-        # Clamp factors to prevent excessive scaling
-        x_factor = max(0.1, min(10.0, ap.x_factor))
-        y_factor = max(0.1, min(10.0, ap.y_factor))
+        if abs(z_anisotropy_factor - 1.0) > 0.01: # Only apply if there's a significant difference
+            distance_map_float = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5).astype(np.float32)
 
-        # Only resize if factors are not 1.0 to avoid unnecessary work
-        if x_factor != 1.0 or y_factor != 1.0:
-            new_width = int(original_width * x_factor)
-            new_height = int(original_height * y_factor)
+            # Prevent overflow by ensuring calculation stays within float32 limits
+            # This is a safe operation as distance maps are non-negative.
+            with np.errstate(over='ignore'):
+                distance_map_float *= z_anisotropy_factor
 
-            # Resize the source mask, calculate distance, then resize back
-            resized_src = cv2.resize(distance_transform_src, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
-            resized_dist_map = cv2.distanceTransform(resized_src, cv2.DIST_L2, 5)
-
-            # Resize the distance map back to original dimensions
-            distance_map = cv2.resize(resized_dist_map, (original_width, original_height), interpolation=cv2.INTER_LINEAR)
+            # After multiplication, it's good practice to clip to the max value of float32
+            # though the overflow should now be handled more gracefully.
+            np.clip(distance_map_float, 0, np.finfo(np.float32).max, out=distance_map_float)
+            distance_map = distance_map_float
         else:
             distance_map = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5)
     else:
