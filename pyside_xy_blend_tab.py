@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QLineEdit,
     QComboBox, QPushButton, QListWidget,
     QListWidgetItem, QStackedWidget, QMessageBox, QFileDialog,
-    QAbstractItemView, QTableWidget, QTableWidgetItem, QHeaderView
+    QAbstractItemView, QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIntValidator, QDoubleValidator
