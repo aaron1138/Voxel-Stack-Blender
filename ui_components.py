@@ -264,6 +264,18 @@ class ImageProcessorApp(QWidget):
         self.numba_checkbox.setToolTip("Uses a Just-In-Time compiler (Numba) for the Enhanced EDT calculation, which may be significantly faster. Requires the 'numba' package.")
         general_layout.addWidget(self.numba_checkbox)
 
+        self.tiledb_checkbox = QCheckBox("Enable TileDB Storage Engine")
+        self.tiledb_checkbox.setToolTip("Uses TileDB to store the entire image stack in a 3D array for potentially faster slicing.")
+        general_layout.addWidget(self.tiledb_checkbox)
+
+        self.xz_smoothing_checkbox = QCheckBox("Apply XZ Smoothing")
+        self.xz_smoothing_checkbox.setToolTip("Applies a smoothing filter across the XZ plane.")
+        general_layout.addWidget(self.xz_smoothing_checkbox)
+
+        self.yz_smoothing_checkbox = QCheckBox("Apply YZ Smoothing")
+        self.yz_smoothing_checkbox.setToolTip("Applies a smoothing filter across the YZ plane.")
+        general_layout.addWidget(self.yz_smoothing_checkbox)
+
         self.debug_checkbox = QCheckBox("Save Intermediate Debug Images")
         general_layout.addWidget(self.debug_checkbox)
         
@@ -299,9 +311,15 @@ class ImageProcessorApp(QWidget):
         self.uvtools_input_file_button.clicked.connect(lambda: self.browse_file(self.uvtools_input_file_edit, "Select Input Slice File"))
         self.input_mode_group.idClicked.connect(self.on_input_mode_changed)
         self.blending_mode_combo.currentIndexChanged.connect(self.on_blending_mode_changed)
+        self.tiledb_checkbox.toggled.connect(self._update_tiledb_options_state)
         self.save_config_button.clicked.connect(self._save_config_to_file)
         self.load_config_button.clicked.connect(self._load_config_from_file)
         self.start_stop_button.clicked.connect(self.toggle_processing)
+
+    def _update_tiledb_options_state(self, checked):
+        """Enable/disable TileDB-dependent options."""
+        self.xz_smoothing_checkbox.setEnabled(checked)
+        self.yz_smoothing_checkbox.setEnabled(checked)
 
     def _autodetect_uvtools(self):
         """Checks for UVTools in the default location and populates the path if found."""
@@ -378,6 +396,10 @@ class ImageProcessorApp(QWidget):
         # --- General Settings ---
         self.thread_count_edit.setText(str(config.thread_count))
         self.numba_checkbox.setChecked(config.use_numba_jit)
+        self.tiledb_checkbox.setChecked(config.use_tiledb)
+        self.xz_smoothing_checkbox.setChecked(config.apply_xz_smoothing)
+        self.yz_smoothing_checkbox.setChecked(config.apply_yz_smoothing)
+        self._update_tiledb_options_state(config.use_tiledb)
         self.debug_checkbox.setChecked(config.debug_save)
         
         self.xy_blend_tab.apply_settings(config)
@@ -447,6 +469,9 @@ class ImageProcessorApp(QWidget):
         try: config.thread_count = int(self.thread_count_edit.text())
         except ValueError: config.thread_count = DEFAULT_NUM_WORKERS
         config.use_numba_jit = self.numba_checkbox.isChecked()
+        config.use_tiledb = self.tiledb_checkbox.isChecked()
+        config.apply_xz_smoothing = self.xz_smoothing_checkbox.isChecked()
+        config.apply_yz_smoothing = self.yz_smoothing_checkbox.isChecked()
         config.debug_save = self.debug_checkbox.isChecked()
         
         config.save("app_config.json")

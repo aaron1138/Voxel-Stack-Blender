@@ -201,6 +201,10 @@ class Config:
     # --- General Settings ---
     thread_count: int = DEFAULT_NUM_WORKERS
     use_numba_jit: bool = False
+    use_tiledb: bool = False
+    tiledb_uri: str = ""
+    apply_xz_smoothing: bool = False
+    apply_yz_smoothing: bool = False
     debug_save: bool = False
     xy_blend_pipeline: List[XYBlendOperation] = field(default_factory=lambda: [XYBlendOperation("none")])
 

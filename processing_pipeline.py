@@ -77,15 +77,16 @@ class ProcessingPipelineThread(QThread):
         prior_binary_masks_snapshot: collections.deque,
         app_config: Config,
         xy_blend_pipeline_ops: List[XYBlendOperation],
-        output_folder: str,
-        debug_save: bool
+        output_path: str, # Can be folder or tiledb_uri
+        debug_save: bool,
+        index: int = None
     ) -> str:
         """Processes a single image completely. This function runs in a worker thread."""
         current_binary_image = image_data['binary_image']
         original_image = image_data['original_image']
         filepath = image_data['filepath']
 
-        debug_info = {'output_folder': output_folder, 'base_filename': os.path.splitext(os.path.basename(filepath))[0]} if debug_save else None
+        debug_info = {'output_folder': output_path, 'base_filename': os.path.splitext(os.path.basename(filepath))[0]} if debug_save else None
 
         # Prepare the prior mask data based on the blending mode
         if app_config.blending_mode in [ProcessingMode.WEIGHTED_STACK, ProcessingMode.ENHANCED_EDT]:
@@ -106,11 +107,16 @@ class ProcessingPipelineThread(QThread):
         output_image_from_core = core.merge_to_output(original_image, receding_gradient)
         final_processed_image = xy_blend_processor.process_xy_pipeline(output_image_from_core, xy_blend_pipeline_ops)
 
-        output_filename = os.path.basename(filepath)
-        output_filepath = os.path.join(output_folder, output_filename)
-        cv2.imwrite(output_filepath, final_processed_image)
-        print(f"Successfully wrote output file: {output_filepath}") # Verification print
-        return output_filepath
+        if app_config.use_tiledb:
+            with tiledb.open(output_path, "w") as A:
+                A[index, :, :] = final_processed_image
+            return f"Wrote slice {index} to TileDB"
+        else:
+            output_filename = os.path.basename(filepath)
+            output_filepath = os.path.join(output_path, output_filename)
+            cv2.imwrite(output_filepath, final_processed_image)
+            print(f"Successfully wrote output file: {output_filepath}") # Verification print
+            return output_filepath
 
     def run(self):
         """
@@ -160,6 +166,15 @@ class ProcessingPipelineThread(QThread):
                 return
 
             self.logger.log(f"Found {total_images} images to process.")
+
+            if self.app_config.use_tiledb:
+                self.status_update.emit("Ingesting images into TileDB array...")
+                tiledb_uri = os.path.join(self.session_temp_folder or processing_output_path, "tiledb_image_stack")
+                self.app_config.tiledb_uri = tiledb_uri
+                image_filepaths = [os.path.join(input_path, f) for f in image_filenames_filtered]
+                tiledb_engine.ingest_images_to_tiledb(image_filepaths, tiledb_uri, self.logger)
+                self.status_update.emit("TileDB ingestion complete.")
+
             prior_binary_masks_cache = collections.deque(maxlen=self.app_config.receding_layers)
             tracker = ROITracker()
 
@@ -196,8 +211,14 @@ class ProcessingPipelineThread(QThread):
                         process_completed_futures(done)
 
                     self.status_update.emit(f"Analyzing {filename} ({i + 1}/{total_images})")
-                    filepath = os.path.join(input_path, filename)
-                    binary_image, original_image = core.load_image(filepath)
+
+                    if self.app_config.use_tiledb:
+                        binary_image, original_image = tiledb_engine.get_slice_and_binary(self.app_config.tiledb_uri, i)
+                        filepath = os.path.join(input_path, filename)
+                    else:
+                        filepath = os.path.join(input_path, filename)
+                        binary_image, original_image = core.load_image(filepath)
+
                     if binary_image is None:
                         self.status_update.emit(f"Skipping unloadable image: {filename}")
                         total_images = max(1, total_images - 1)
@@ -213,11 +234,14 @@ class ProcessingPipelineThread(QThread):
                         'filepath': filepath, 'binary_image': binary_image,
                         'original_image': original_image, 'classified_rois': classified_rois
                     }
+
+                    output_target = self.app_config.tiledb_uri if self.app_config.use_tiledb else processing_output_path
+
                     future = executor.submit(
                         self._process_single_image_task, image_data_for_task,
                         list(reversed(prior_binary_masks_cache)), self.app_config,
-                        self.app_config.xy_blend_pipeline, processing_output_path,
-                        self.app_config.debug_save
+                        self.app_config.xy_blend_pipeline, output_target,
+                        self.app_config.debug_save, i
                     )
                     active_futures.add(future)
                     prior_binary_masks_cache.append(binary_image)
@@ -226,6 +250,38 @@ class ProcessingPipelineThread(QThread):
                     process_completed_futures(concurrent.futures.as_completed(active_futures))
 
             self.logger.log("Stack blending complete.")
+
+            if self.app_config.use_tiledb:
+                if self.app_config.apply_xz_smoothing:
+                    self.status_update.emit("Applying XZ smoothing...")
+                    with tiledb.open(self.app_config.tiledb_uri, 'r') as A:
+                        height, width = A.shape[1], A.shape[2]
+                    with tiledb.open(self.app_config.tiledb_uri, 'w') as A:
+                        for y in range(height):
+                            xz_slice = tiledb_engine.get_xz_slice(self.app_config.tiledb_uri, y)
+                            smoothed_xz = core.smooth_virtual_slice(xz_slice)
+                            A[:, y, :] = smoothed_xz
+                    self.status_update.emit("XZ smoothing complete.")
+
+                if self.app_config.apply_yz_smoothing:
+                    self.status_update.emit("Applying YZ smoothing...")
+                    with tiledb.open(self.app_config.tiledb_uri, 'r') as A:
+                         height, width = A.shape[1], A.shape[2]
+                    with tiledb.open(self.app_config.tiledb_uri, 'w') as A:
+                        for x in range(width):
+                            yz_slice = tiledb_engine.get_yz_slice(self.app_config.tiledb_uri, x)
+                            smoothed_yz = core.smooth_virtual_slice(yz_slice)
+                            A[:, :, x] = smoothed_yz
+                    self.status_update.emit("YZ smoothing complete.")
+
+                self.status_update.emit("Writing final images from TileDB...")
+                for i, filename in enumerate(image_filenames_filtered):
+                    _, final_image = tiledb_engine.get_slice_and_binary(self.app_config.tiledb_uri, i)
+                    output_filepath = os.path.join(processing_output_path, filename)
+                    cv2.imwrite(output_filepath, final_image)
+                    print(f"Successfully wrote output file: {output_filepath}")
+                self.status_update.emit("Final images written.")
+
             if self.app_config.input_mode == "uvtools" and not self.error_occurred:
                 if self._is_running:
                     self.status_update.emit("All image processing tasks completed.")

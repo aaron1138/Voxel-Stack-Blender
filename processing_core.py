@@ -439,6 +439,23 @@ def process_z_blending(current_white_mask, prior_masks, config, classified_rois,
             debug_info
         )
 
+def smooth_virtual_slice(slice_data: np.ndarray) -> np.ndarray:
+    """
+    Applies a 1D Gaussian blur to a virtual slice (XZ or YZ) to smooth it.
+    The blur is applied along the Z-axis (which is the first dimension of the slice_data).
+    """
+    # Kernel size and sigma can be adjusted for different smoothing effects
+    kernel_size = 5
+    sigma = 1.5
+
+    # Create a 1D Gaussian kernel
+    kernel = cv2.getGaussianKernel(kernel_size, sigma)
+
+    # Apply the kernel along the Z-axis (axis=0)
+    smoothed_slice = cv2.sepFilter2D(slice_data, -1, kernel, kernel.T)
+
+    return smoothed_slice
+
 def merge_to_output(original_current_image, receding_gradient):
     """
     Merges the calculated receding gradient with the original current image.
