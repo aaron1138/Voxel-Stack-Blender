@@ -23,3 +23,4 @@ six==1.17.0
 pytest
 typing_extensions==4.14.1
 numba==0.61.2
+sparse==0.15.1
