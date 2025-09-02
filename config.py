@@ -201,6 +201,9 @@ class Config:
     # --- General Settings ---
     thread_count: int = DEFAULT_NUM_WORKERS
     use_numba_jit: bool = False
+    use_tiledb: bool = False
+    tiledb_enable_orthogonal_blending: bool = True
+    tiledb_orthogonal_blur_sigma: float = 1.0
     debug_save: bool = False
     xy_blend_pipeline: List[XYBlendOperation] = field(default_factory=lambda: [XYBlendOperation("none")])
 

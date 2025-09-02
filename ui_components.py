@@ -264,6 +264,28 @@ class ImageProcessorApp(QWidget):
         self.numba_checkbox.setToolTip("Uses a Just-In-Time compiler (Numba) for the Enhanced EDT calculation, which may be significantly faster. Requires the 'numba' package.")
         general_layout.addWidget(self.numba_checkbox)
 
+        self.tiledb_checkbox = QCheckBox("Enable TileDB Backend (Experimental)")
+        self.tiledb_checkbox.setToolTip("Uses a TileDB array for slice data access, which can be faster for certain operations and large datasets. Requires the 'tiledb' package.")
+        general_layout.addWidget(self.tiledb_checkbox)
+
+        # --- Orthogonal Blending Settings (indented under TileDB) ---
+        self.ortho_blending_widget = QWidget()
+        ortho_layout = QHBoxLayout(self.ortho_blending_widget)
+        ortho_layout.setContentsMargins(20, 0, 0, 0) # Indent
+
+        self.ortho_blending_checkbox = QCheckBox("Enable Orthogonal (XZ/YZ) Blending")
+        self.ortho_blending_checkbox.setToolTip("Performs additional anti-aliasing by blending along XZ and YZ planes. Requires TileDB backend.")
+        ortho_layout.addWidget(self.ortho_blending_checkbox)
+
+        self.ortho_sigma_label = QLabel("Ortho Blur Sigma:")
+        ortho_layout.addWidget(self.ortho_sigma_label)
+        self.ortho_sigma_edit = QLineEdit("1.0")
+        self.ortho_sigma_edit.setValidator(QDoubleValidator(0.1, 10.0, 2, self))
+        self.ortho_sigma_edit.setFixedWidth(50)
+        ortho_layout.addWidget(self.ortho_sigma_edit)
+        ortho_layout.addStretch(1)
+        general_layout.addWidget(self.ortho_blending_widget)
+
         self.debug_checkbox = QCheckBox("Save Intermediate Debug Images")
         general_layout.addWidget(self.debug_checkbox)
         
@@ -299,9 +321,15 @@ class ImageProcessorApp(QWidget):
         self.uvtools_input_file_button.clicked.connect(lambda: self.browse_file(self.uvtools_input_file_edit, "Select Input Slice File"))
         self.input_mode_group.idClicked.connect(self.on_input_mode_changed)
         self.blending_mode_combo.currentIndexChanged.connect(self.on_blending_mode_changed)
+        self.tiledb_checkbox.stateChanged.connect(self._on_tiledb_state_changed)
         self.save_config_button.clicked.connect(self._save_config_to_file)
         self.load_config_button.clicked.connect(self._load_config_from_file)
         self.start_stop_button.clicked.connect(self.toggle_processing)
+
+    def _on_tiledb_state_changed(self, state):
+        """Enable/disable orthogonal blending options based on TileDB checkbox state."""
+        is_enabled = (state == Qt.Checked)
+        self.ortho_blending_widget.setEnabled(is_enabled)
 
     def _autodetect_uvtools(self):
         """Checks for UVTools in the default location and populates the path if found."""
@@ -378,9 +406,15 @@ class ImageProcessorApp(QWidget):
         # --- General Settings ---
         self.thread_count_edit.setText(str(config.thread_count))
         self.numba_checkbox.setChecked(config.use_numba_jit)
+        self.tiledb_checkbox.setChecked(config.use_tiledb)
+        self.ortho_blending_checkbox.setChecked(config.tiledb_enable_orthogonal_blending)
+        self.ortho_sigma_edit.setText(str(config.tiledb_orthogonal_blur_sigma))
         self.debug_checkbox.setChecked(config.debug_save)
         
         self.xy_blend_tab.apply_settings(config)
+
+        # Set initial state for dependent widgets
+        self._on_tiledb_state_changed(self.tiledb_checkbox.checkState())
 
     def save_settings(self):
         """Saves current UI settings to the global config object and QSettings."""
@@ -447,6 +481,12 @@ class ImageProcessorApp(QWidget):
         try: config.thread_count = int(self.thread_count_edit.text())
         except ValueError: config.thread_count = DEFAULT_NUM_WORKERS
         config.use_numba_jit = self.numba_checkbox.isChecked()
+        config.use_tiledb = self.tiledb_checkbox.isChecked()
+        config.tiledb_enable_orthogonal_blending = self.ortho_blending_checkbox.isChecked()
+        try:
+            config.tiledb_orthogonal_blur_sigma = float(self.ortho_sigma_edit.text().replace(',', '.'))
+        except ValueError:
+            config.tiledb_orthogonal_blur_sigma = 1.0
         config.debug_save = self.debug_checkbox.isChecked()
         
         config.save("app_config.json")
