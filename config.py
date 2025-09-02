@@ -32,6 +32,7 @@ class ProcessingMode(Enum):
     FIXED_FADE = "fixed_fade"
     ROI_FADE = "roi_fade"
     WEIGHTED_STACK = "weighted_stack"
+    TILEDB_3D_AA = "tiledb_3d_aa"
 
 
 class WeightingFalloff(Enum):
@@ -201,6 +202,7 @@ class Config:
     # --- General Settings ---
     thread_count: int = DEFAULT_NUM_WORKERS
     use_numba_jit: bool = False
+    use_tiledb: bool = False
     debug_save: bool = False
     xy_blend_pipeline: List[XYBlendOperation] = field(default_factory=lambda: [XYBlendOperation("none")])
 

@@ -22,6 +22,7 @@ import numpy as np
 import os
 from scipy import ndimage
 import numba
+import tiledb
 
 from config import ProcessingMode
 
@@ -404,12 +405,83 @@ def _calculate_receding_gradient_field_enhanced_edt(current_white_mask, prior_bi
     return cv2.bitwise_and(final_gradient_map, final_gradient_map, mask=receding_white_areas)
 
 
-def process_z_blending(current_white_mask, prior_masks, config, classified_rois, debug_info=None):
+def _calculate_receding_gradient_field_tiledb_3d_aa(current_white_mask, layer_index, tiledb_uri, config, debug_info=None):
+    """
+    Calculates a gradient using orthogonal XZ and YZ slices from a TileDB store
+    for anti-aliasing.
+    """
+    if not tiledb_uri or not config.use_tiledb:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    # 1. Find the edges of the current layer. This is where we'll apply AA.
+    edges = cv2.Canny(current_white_mask, 100, 200)
+    edge_coords = np.argwhere(edges > 0) # Returns list of [y, x]
+
+    if edge_coords.size == 0:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    # Create an output gradient map to populate
+    gradient_map = np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    # For this simple example, we'll use a small kernel to average around the current pixel
+    # in the orthogonal slices. A kernel size of 3 means we look one pixel "up/down"
+    # and "left/right" in the orthogonal planes.
+    kernel_size = 3
+    half_kernel = kernel_size // 2
+
+    # 2. For each edge pixel, get its orthogonal slices and calculate the new value.
+    with tiledb.open(tiledb_uri, 'r') as A:
+        num_layers, height, width = A.shape
+
+        for y, x in edge_coords:
+            # Get the pixel values in the column above and below this pixel across all layers
+            yz_slice = A[:, :, x]['pixel_value'] # Shape: (num_layers, height)
+
+            # Get the pixel values in the row left and right of this pixel across all layers
+            xz_slice = A[:, y, :]['pixel_value'] # Shape: (num_layers, width)
+
+            # --- YZ Slice (Vertical) ---
+            # Define the bounds for the kernel in the YZ slice (around the current layer)
+            z_start = max(0, layer_index - half_kernel)
+            z_end = min(num_layers, layer_index + half_kernel + 1)
+            y_start = max(0, y - half_kernel)
+            y_end = min(height, y + half_kernel + 1)
+
+            yz_kernel_values = yz_slice[z_start:z_end, y_start:y_end]
+
+            # --- XZ Slice (Horizontal) ---
+            # Define the bounds for the kernel in the XZ slice (around the current layer)
+            z_start = max(0, layer_index - half_kernel)
+            z_end = min(num_layers, layer_index + half_kernel + 1)
+            x_start = max(0, x - half_kernel)
+            x_end = min(width, x + half_kernel + 1)
+
+            xz_kernel_values = xz_slice[z_start:z_end, x_start:x_end]
+
+            # Combine the values and average them
+            # This is a very basic filter. More complex weighting could be used.
+            all_values = np.concatenate((yz_kernel_values.flatten(), xz_kernel_values.flatten()))
+
+            if all_values.size > 0:
+                avg_value = np.mean(all_values)
+                gradient_map[y, x] = int(avg_value)
+
+    return gradient_map
+
+def process_z_blending(current_white_mask, prior_masks, config, classified_rois, debug_info=None, layer_index=None, tiledb_uri=None):
     """
     Main entry point for Z-axis blending. Dispatches to the correct blending mode.
     `prior_masks` can be a single combined mask or a list of masks depending on the mode.
     """
-    if config.blending_mode == ProcessingMode.ROI_FADE:
+    if config.blending_mode == ProcessingMode.TILEDB_3D_AA:
+        return _calculate_receding_gradient_field_tiledb_3d_aa(
+            current_white_mask,
+            layer_index,
+            tiledb_uri,
+            config,
+            debug_info
+        )
+    elif config.blending_mode == ProcessingMode.ROI_FADE:
         return _calculate_receding_gradient_field_roi_fade(
             current_white_mask,
             prior_masks,

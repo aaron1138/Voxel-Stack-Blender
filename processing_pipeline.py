@@ -8,10 +8,12 @@ from typing import List
 import subprocess
 import datetime
 import shutil
+import tiledb
 
 from PySide6.QtCore import QThread, Signal
 
 from config import Config, XYBlendOperation, ProcessingMode
+from data_loader import FileDataLoader, TileDBDataLoader
 import processing_core as core
 import xy_blend_processor
 from roi_tracker import ROITracker
@@ -78,7 +80,9 @@ class ProcessingPipelineThread(QThread):
         app_config: Config,
         xy_blend_pipeline_ops: List[XYBlendOperation],
         output_folder: str,
-        debug_save: bool
+        debug_save: bool,
+        layer_index: int = None,
+        tiledb_uri: str = None
     ) -> str:
         """Processes a single image completely. This function runs in a worker thread."""
         current_binary_image = image_data['binary_image']
@@ -100,7 +104,9 @@ class ProcessingPipelineThread(QThread):
             prior_masks_for_blending,
             app_config,
             image_data['classified_rois'],
-            debug_info=debug_info
+            debug_info=debug_info,
+            layer_index=layer_index,
+            tiledb_uri=tiledb_uri
         )
 
         output_image_from_core = core.merge_to_output(original_image, receding_gradient)
@@ -120,48 +126,56 @@ class ProcessingPipelineThread(QThread):
         self.logger.log_config(self.app_config)
         self.status_update.emit("Processing started...")
 
-        numeric_pattern = re.compile(r'(\d+)\.\w+$')
-        def get_numeric_part(filename):
-            match = numeric_pattern.search(filename)
-            return int(match.group(1)) if match else float('inf')
-
         try:
+            # --- 1. Setup paths and folders ---
             input_path = ""
             processing_output_path = ""
-
             if self.app_config.input_mode == "uvtools":
+                self.session_temp_folder = os.path.join(self.app_config.uvtools_temp_folder, f"{self.app_config.output_file_prefix}{self.run_timestamp}")
+                os.makedirs(self.session_temp_folder, exist_ok=True)
                 input_path = self._run_uvtools_extraction()
-                self.logger.log("UVTools extraction completed.")
                 processing_output_path = os.path.join(self.session_temp_folder, "Output")
                 os.makedirs(processing_output_path, exist_ok=True)
-            else:
+            else: # folder mode
                 input_path = self.app_config.input_folder
                 processing_output_path = self.app_config.output_folder
+                if self.app_config.use_tiledb:
+                    self.session_temp_folder = os.path.join(self.app_config.output_folder, f"temp_{self.run_timestamp}")
+                    os.makedirs(self.session_temp_folder, exist_ok=True)
+
+            # --- 2. Filter image files ---
+            numeric_pattern = re.compile(r'(\d+)\.\w+$')
+            def get_numeric_part(filename):
+                match = numeric_pattern.search(filename)
+                return int(match.group(1)) if match else float('inf')
 
             all_image_filenames = sorted(
                 [f for f in os.listdir(input_path) if f.lower().endswith(('.png', '.bmp', '.tif', '.tiff'))],
                 key=get_numeric_part
             )
-
-            image_filenames_filtered = []
-            for f in all_image_filenames:
-                numeric_part = get_numeric_part(f)
-                if self.app_config.start_index is not None and numeric_part < self.app_config.start_index:
-                    continue
-                if self.app_config.stop_index is not None and numeric_part > self.app_config.stop_index:
-                    continue
-                image_filenames_filtered.append(f)
+            image_filenames_filtered = [
+                f for f in all_image_filenames
+                if (self.app_config.start_index is None or get_numeric_part(f) >= self.app_config.start_index)
+                and (self.app_config.stop_index is None or get_numeric_part(f) <= self.app_config.stop_index)
+            ]
 
             total_images = len(image_filenames_filtered)
             if total_images == 0:
-                error_msg = "No images found in the specified folder or index range."
-                self.logger.log(f"ERROR: {error_msg}")
-                self.error_signal.emit(error_msg)
+                self.error_signal.emit("No images found in the specified folder or index range.")
                 return
-
             self.logger.log(f"Found {total_images} images to process.")
-            prior_binary_masks_cache = collections.deque(maxlen=self.app_config.receding_layers)
+
+            # --- 3. Setup DataLoader ---
+            if self.app_config.use_tiledb:
+                data_loader = TileDBDataLoader(input_path, image_filenames_filtered, self.session_temp_folder)
+            else:
+                data_loader = FileDataLoader(input_path, image_filenames_filtered)
+
+            data_loader.setup(self.status_update.emit, self.progress_update.emit)
+
+            # --- 4. Main Processing Loop ---
             tracker = ROITracker()
+            prior_binary_masks_cache = collections.deque(maxlen=self.app_config.receding_layers)
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                 active_futures = set()
@@ -185,39 +199,42 @@ class ProcessingPipelineThread(QThread):
                             self.stop_processing()
                         active_futures.remove(future)
 
-                for i, filename in enumerate(image_filenames_filtered):
+                for i in range(total_images):
                     if not self._is_running:
                         self.logger.log("Processing stopped by user.")
-                        self.status_update.emit("Processing stopped by user.")
                         break
 
                     if len(active_futures) >= max_active_futures:
                         done, _ = concurrent.futures.wait(active_futures, return_when=concurrent.futures.FIRST_COMPLETED)
                         process_completed_futures(done)
 
-                    self.status_update.emit(f"Analyzing {filename} ({i + 1}/{total_images})")
-                    filepath = os.path.join(input_path, filename)
-                    binary_image, original_image = core.load_image(filepath)
+                    binary_image, original_image, filename, layer_index = data_loader.get_image_data(i)
+
                     if binary_image is None:
                         self.status_update.emit(f"Skipping unloadable image: {filename}")
-                        total_images = max(1, total_images - 1)
+                        total_images = max(1, total_images - 1) # Adjust total for progress bar
                         continue
+
+                    self.status_update.emit(f"Analyzing {filename} ({i + 1}/{total_images})")
 
                     classified_rois = []
                     if self.app_config.blending_mode == ProcessingMode.ROI_FADE:
-                        layer_index = get_numeric_part(filename)
                         rois = core.identify_rois(binary_image, self.app_config.roi_params.min_size)
                         classified_rois = tracker.update_and_classify(rois, layer_index, self.app_config)
 
                     image_data_for_task = {
-                        'filepath': filepath, 'binary_image': binary_image,
+                        'filepath': os.path.join(input_path, filename), # Pass full path for debug name
+                        'binary_image': binary_image,
                         'original_image': original_image, 'classified_rois': classified_rois
                     }
+
                     future = executor.submit(
                         self._process_single_image_task, image_data_for_task,
                         list(reversed(prior_binary_masks_cache)), self.app_config,
                         self.app_config.xy_blend_pipeline, processing_output_path,
-                        self.app_config.debug_save
+                        self.app_config.debug_save,
+                        layer_index=layer_index,
+                        tiledb_uri=data_loader.get_tiledb_uri()
                     )
                     active_futures.add(future)
                     prior_binary_masks_cache.append(binary_image)
@@ -225,13 +242,9 @@ class ProcessingPipelineThread(QThread):
                 if self._is_running and active_futures:
                     process_completed_futures(concurrent.futures.as_completed(active_futures))
 
+            # --- 5. Finalization ---
             self.logger.log("Stack blending complete.")
-            if self.app_config.input_mode == "uvtools" and not self.error_occurred:
-                if self._is_running:
-                    self.status_update.emit("All image processing tasks completed.")
-                else:
-                    self.status_update.emit("Processing stopped by user, repacking completed layers...")
-
+            if self.app_config.input_mode == "uvtools" and not self.error_occurred and self._is_running:
                 self.logger.log("Starting UVTools repack.")
                 self._run_uvtools_repack(processing_output_path)
                 self.logger.log("UVTools repack completed.")
@@ -244,23 +257,20 @@ class ProcessingPipelineThread(QThread):
             self.error_signal.emit(error_info)
         finally:
             self.logger.log("Run finalizing.")
-            if self.app_config.input_mode == "uvtools" and self.app_config.uvtools_delete_temp_on_completion and not self.error_occurred:
-                if self.session_temp_folder and os.path.isdir(self.session_temp_folder):
-                    self.status_update.emit(f"Deleting temporary folder: {self.session_temp_folder}")
-                    self.logger.log("Deleting temporary files.")
-                    try:
-                        shutil.rmtree(self.session_temp_folder)
-                        self.status_update.emit("Temporary files deleted.")
-                        self.logger.log("Temporary files deleted successfully.")
-                    except Exception as e:
-                        self.logger.log(f"ERROR: Could not delete temp folder: {e}")
-                        self.error_signal.emit(f"Could not delete temp folder: {e}")
+            # Cleanup temp folder for both uvtools mode and folder mode with tiledb
+            if self.session_temp_folder and os.path.isdir(self.session_temp_folder):
+                if self.app_config.input_mode == "uvtools" and self.app_config.uvtools_delete_temp_on_completion and not self.error_occurred:
+                    self.logger.log("Deleting temporary files for UVTools.")
+                    shutil.rmtree(self.session_temp_folder)
+                elif self.app_config.use_tiledb:
+                    self.logger.log("Deleting temporary files for TileDB.")
+                    shutil.rmtree(self.session_temp_folder)
 
             if not self.error_occurred and self._is_running:
                 self.status_update.emit("Processing complete!")
                 self.logger.log("Run completed successfully.")
             elif self.error_occurred:
-                self.status_update.emit("Processing failed due to an error. Temporary files have been preserved for inspection.")
+                self.status_update.emit("Processing failed due to an error.")
                 self.logger.log("Run failed due to an error.")
             else:
                 self.status_update.emit("Processing stopped.")
