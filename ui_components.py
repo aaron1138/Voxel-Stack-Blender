@@ -35,6 +35,7 @@ from config import (
 )
 from pyside_xy_blend_tab import XYBlendTab
 from processing_pipeline import ProcessingPipelineThread
+from lut_editor_widget import LutEditorWidget
 
 class ImageProcessorApp(QWidget):
     """The main application window, now with a restructured UI."""
@@ -156,6 +157,7 @@ class ImageProcessorApp(QWidget):
         blending_mode_layout.addWidget(QLabel("Blending Mode:"))
         self.blending_mode_combo = QComboBox()
         self.blending_mode_combo.addItem("Enhanced EDT", ProcessingMode.ENHANCED_EDT)
+        self.blending_mode_combo.addItem("Enhanced EDT v2", ProcessingMode.ENHANCED_EDT_V2)
         self.blending_mode_combo.addItem("Fixed Fade", ProcessingMode.FIXED_FADE)
         self.blending_mode_combo.addItem("ROI Mode (Slow)", ProcessingMode.ROI_FADE)
         blending_mode_layout.addWidget(self.blending_mode_combo)
@@ -244,6 +246,30 @@ class ImageProcessorApp(QWidget):
 
         blending_layout.addWidget(self.roi_settings_group)
 
+        # --- Enhanced EDT v2 Settings ---
+        self.edt_v2_settings_group = QGroupBox("Enhanced EDT v2 Settings")
+        self.edt_v2_settings_group.setVisible(False) # Hidden by default
+        edt_v2_layout = QVBoxLayout(self.edt_v2_settings_group)
+
+        # We need a new instance of the LUT editor for the distance-based gradient
+        self.distance_lut_editor = LutEditorWidget(self)
+
+        # Customize the plot for distance vs. gradient
+        dist_canvas = self.distance_lut_editor.preview_canvas
+        dist_canvas.axes.set_title("Distance-to-Gradient LUT")
+        dist_canvas.axes.set_xlabel("Falloff Profile (% of Max Fade Distance)")
+        dist_canvas.axes.set_ylabel("Grayscale Value (0-255)")
+        # The underlying LUT is 256 points, so the X-axis is 0-255, representing the percentage
+        dist_canvas.axes.set_xlim(0, 255)
+        dist_canvas.axes.set_ylim(0, 255)
+
+        # Note: The LUT table view in this widget will also be incorrect (shows 0-255).
+        # This is a deeper issue with the LutEditorWidget expecting a 256-entry LUT.
+        # For now, we accept this limitation and focus on the graph.
+
+        edt_v2_layout.addWidget(self.distance_lut_editor)
+        blending_layout.addWidget(self.edt_v2_settings_group)
+
         main_processing_layout.addWidget(blending_group)
         
         general_group = QGroupBox("General")
@@ -303,6 +329,15 @@ class ImageProcessorApp(QWidget):
         self.load_config_button.clicked.connect(self._load_config_from_file)
         self.start_stop_button.clicked.connect(self.toggle_processing)
 
+        # Connect the new LUT editor
+        self.distance_lut_editor.lut_params_changed.connect(self._on_distance_lut_params_changed)
+
+
+    def _on_distance_lut_params_changed(self):
+        # This handler ensures the plot in the distance LUT editor is redrawn
+        # when its parameters (e.g., spline points) are changed.
+        self.distance_lut_editor.plot_current_lut()
+
     def _autodetect_uvtools(self):
         """Checks for UVTools in the default location and populates the path if found."""
         default_path = "C:\\Program Files\\UVTools\\UVToolsCmd.exe"
@@ -317,13 +352,11 @@ class ImageProcessorApp(QWidget):
         selected_mode = self.blending_mode_combo.itemData(index)
 
         # Show/hide ROI settings
-        if selected_mode == ProcessingMode.ROI_FADE:
-            self.roi_settings_group.setVisible(True)
-        else:
-            self.roi_settings_group.setVisible(False)
+        self.roi_settings_group.setVisible(selected_mode == ProcessingMode.ROI_FADE)
+        self.edt_v2_settings_group.setVisible(selected_mode == ProcessingMode.ENHANCED_EDT_V2)
 
         # Update fade distance label text
-        if selected_mode == ProcessingMode.ENHANCED_EDT:
+        if selected_mode in [ProcessingMode.ENHANCED_EDT, ProcessingMode.ENHANCED_EDT_V2]:
             self.fade_dist_label.setText("Max Fade (pixels):")
         else:
             self.fade_dist_label.setText("Fade Distance (pixels):")
@@ -365,6 +398,9 @@ class ImageProcessorApp(QWidget):
         index = self.blending_mode_combo.findData(config.blending_mode)
         self.blending_mode_combo.setCurrentIndex(index if index >= 0 else 0)
         self.on_blending_mode_changed(self.blending_mode_combo.currentIndex())
+
+        # --- EDT V2 Settings ---
+        self.distance_lut_editor.set_lut_params(config.distance_lut_params)
 
         # --- ROI Settings ---
         self.roi_min_size_edit.setText(str(config.roi_params.min_size))

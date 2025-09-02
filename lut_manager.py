@@ -24,6 +24,8 @@ import math
 from typing import Optional, Callable, List
 from scipy.interpolate import CubicSpline # NEW: Add SciPy for spline interpolation
 
+from config import LutParameters
+
 _DEFAULT_Z_REMAP_LUT_ARRAY = np.arange(256, dtype=np.uint8)
 
 def get_default_z_lut() -> np.ndarray:
@@ -86,6 +88,29 @@ def load_lut(filepath: str) -> np.ndarray:
         raise ValueError(f"Invalid JSON format in LUT file '{filepath}': {e}")
     except Exception as e:
         raise IOError(f"Failed to load LUT from '{filepath}': {e}")
+
+def get_lut_from_params(lut_params: LutParameters) -> Optional[np.ndarray]:
+    """
+    Generates or loads a LUT based on the provided LutParameters object.
+    This is the central, non-GUI function for creating a LUT array.
+    """
+    if not lut_params: return None
+    try:
+        if lut_params.lut_source == "generated":
+            args = (lut_params.input_min, lut_params.input_max, lut_params.output_min, lut_params.output_max)
+            if lut_params.lut_generation_type == "spline": return generate_spline_lut(lut_params.spline_points, *args)
+            if lut_params.lut_generation_type == "linear": return generate_linear_lut(*args)
+            if lut_params.lut_generation_type == "gamma": return generate_gamma_lut(lut_params.gamma_value, *args)
+            if lut_params.lut_generation_type == "s_curve": return generate_s_curve_lut(lut_params.s_curve_contrast, *args)
+            if lut_params.lut_generation_type == "log": return generate_log_lut(lut_params.log_param, *args)
+            if lut_params.lut_generation_type == "exp": return generate_exp_lut(lut_params.exp_param, *args)
+            if lut_params.lut_generation_type == "sqrt": return generate_sqrt_lut(lut_params.sqrt_param, *args)
+            if lut_params.lut_generation_type == "rodbard": return generate_rodbard_lut(lut_params.rodbard_param, *args)
+        elif lut_params.lut_source == "file" and lut_params.fixed_lut_path and os.path.exists(lut_params.fixed_lut_path):
+            return load_lut(lut_params.fixed_lut_path)
+    except Exception as e:
+        print(f"Error generating LUT from parameters: {e}")
+    return None
 
 # --- Algorithmic LUT Generation Functions ---
 

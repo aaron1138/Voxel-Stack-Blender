@@ -304,29 +304,9 @@ class LutEditorWidget(QWidget):
         widget_map = {"linear": self.lut_linear_params_widget, "gamma": self.lut_gamma_params_widget, "s_curve": self.lut_s_curve_params_widget, "log": self.lut_log_params_widget, "exp": self.lut_exp_params_widget, "sqrt": self.lut_sqrt_params_widget, "rodbard": self.lut_rodbard_params_widget, "spline": self.lut_spline_params_widget}
         self.gen_lut_algo_params_stacked_widget.setCurrentWidget(widget_map.get(lut_type.lower(), self.lut_linear_params_widget))
 
-    def _get_lut_from_params(self, lut_params: LutParameters) -> Optional[np.ndarray]:
-        if not lut_params: return None
-        try:
-            if lut_params.lut_source == "generated":
-                args = (lut_params.input_min, lut_params.input_max, lut_params.output_min, lut_params.output_max)
-                # FIX: Restore the full if/elif block for LUT generation
-                if lut_params.lut_generation_type == "spline": return lut_manager.generate_spline_lut(lut_params.spline_points, *args)
-                if lut_params.lut_generation_type == "linear": return lut_manager.generate_linear_lut(*args)
-                if lut_params.lut_generation_type == "gamma": return lut_manager.generate_gamma_lut(lut_params.gamma_value, *args)
-                if lut_params.lut_generation_type == "s_curve": return lut_manager.generate_s_curve_lut(lut_params.s_curve_contrast, *args)
-                if lut_params.lut_generation_type == "log": return lut_manager.generate_log_lut(lut_params.log_param, *args)
-                if lut_params.lut_generation_type == "exp": return lut_manager.generate_exp_lut(lut_params.exp_param, *args)
-                if lut_params.lut_generation_type == "sqrt": return lut_manager.generate_sqrt_lut(lut_params.sqrt_param, *args)
-                if lut_params.lut_generation_type == "rodbard": return lut_manager.generate_rodbard_lut(lut_params.rodbard_param, *args)
-            elif lut_params.lut_source == "file" and lut_params.fixed_lut_path and os.path.exists(lut_params.fixed_lut_path):
-                return lut_manager.load_lut(lut_params.fixed_lut_path)
-        except Exception as e:
-            print(f"Error generating LUT: {e}")
-        return None
-
     def plot_current_lut(self):
         if not self._lut_params: return
-        generated_lut = self._get_lut_from_params(self._lut_params)
+        generated_lut = lut_manager.get_lut_from_params(self._lut_params)
         if generated_lut is None: generated_lut = lut_manager.get_default_z_lut()
         is_spline_mode = (self._lut_params.lut_source == "generated" and self._lut_params.lut_generation_type == "spline")
         points_to_show = self._lut_params.spline_points if is_spline_mode else None
@@ -350,7 +330,7 @@ class LutEditorWidget(QWidget):
         if not self._lut_params or self._lut_params.lut_source != "generated":
             QMessageBox.warning(self, "Save Error", "Can only save a LUT when source is 'Generated'.")
             return
-        lut_to_save = self._get_lut_from_params(self._lut_params)
+        lut_to_save = lut_manager.get_lut_from_params(self._lut_params)
         if lut_to_save is None:
             QMessageBox.critical(self, "Save Error", "Could not generate a valid LUT to save.")
             return

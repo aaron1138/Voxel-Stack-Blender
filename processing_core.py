@@ -24,6 +24,7 @@ from scipy import ndimage
 import numba
 
 from config import ProcessingMode
+from lut_manager import get_lut_from_params
 
 def load_image(filepath):
     """
@@ -404,6 +405,93 @@ def _calculate_receding_gradient_field_enhanced_edt(current_white_mask, prior_bi
     return cv2.bitwise_and(final_gradient_map, final_gradient_map, mask=receding_white_areas)
 
 
+@numba.jit(nopython=True, cache=True)
+def _apply_distance_lut_numba(receding_distance_map, receding_white_areas, distance_lut, fade_distance_limit):
+    """
+    Applies the distance-to-gradient LUT to the distance map using Numba for performance.
+    """
+    final_gradient_map = np.zeros_like(receding_distance_map, dtype=np.uint8)
+    lut_max_index = len(distance_lut) - 1
+
+    for y in range(receding_distance_map.shape[0]):
+        for x in range(receding_distance_map.shape[1]):
+            if receding_white_areas[y, x] > 0:
+                dist = receding_distance_map[y, x]
+
+                # Normalize the distance to a 0.0-1.0 scale, where 1.0 is the fade_distance_limit.
+                # We cap the distance at the limit.
+                normalized_dist = min(dist, fade_distance_limit) / fade_distance_limit if fade_distance_limit > 0 else 0.0
+
+                # Scale the normalized distance to the LUT's index range.
+                # Use int(x + 0.5) for rounding, as round() is not universally available in Numba.
+                lut_index = int(normalized_dist * lut_max_index + 0.5)
+
+                # Clamp the index to be safe
+                lut_index = min(max(0, lut_index), lut_max_index)
+
+                # The user-defined LUT maps the falloff shape.
+                # e.g., for a linear falloff, lut[0] would be bright (255) and lut[255] would be dark (0).
+                final_gradient_map[y, x] = distance_lut[lut_index]
+
+    return final_gradient_map
+
+def _calculate_receding_gradient_field_enhanced_edt_v2(current_white_mask, prior_binary_masks, config, debug_info=None):
+    """
+    Calculates a gradient field based on a distance-to-grayscale LUT.
+    """
+    if not prior_binary_masks:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    # --- 1. Get the Distance-to-Gradient LUT ---
+    distance_lut = get_lut_from_params(config.distance_lut_params)
+    if distance_lut is None:
+        print("Warning: Enhanced EDT v2 mode failed to generate or load the distance LUT. Returning black image.")
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    # --- 2. Common Setup (copied from standard Enhanced EDT) ---
+    prior_white_combined_mask = find_prior_combined_white_mask(prior_binary_masks)
+    if prior_white_combined_mask is None:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    receding_white_areas = cv2.bitwise_and(prior_white_combined_mask, cv2.bitwise_not(current_white_mask))
+    if cv2.countNonZero(receding_white_areas) == 0:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    distance_transform_src = cv2.bitwise_not(current_white_mask)
+
+    # --- 3. Anisotropic Correction ---
+    if config.anisotropic_params.enabled:
+        ap = config.anisotropic_params
+        original_height, original_width = distance_transform_src.shape
+        x_factor = max(0.1, min(10.0, ap.x_factor))
+        y_factor = max(0.1, min(10.0, ap.y_factor))
+        if x_factor != 1.0 or y_factor != 1.0:
+            new_width = int(original_width * x_factor)
+            new_height = int(original_height * y_factor)
+            resized_src = cv2.resize(distance_transform_src, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
+            resized_dist_map = cv2.distanceTransform(resized_src, cv2.DIST_L2, 5)
+            distance_map = cv2.resize(resized_dist_map, (original_width, original_height), interpolation=cv2.INTER_LINEAR)
+        else:
+            distance_map = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5)
+    else:
+        distance_map = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5)
+
+    receding_distance_map = cv2.bitwise_and(distance_map, distance_map, mask=receding_white_areas)
+
+    # --- 4. Apply LUT using Numba ---
+    fade_distance_limit = config.fixed_fade_distance_receding
+
+    final_gradient_map = _apply_distance_lut_numba(
+        receding_distance_map,
+        receding_white_areas,
+        distance_lut,
+        fade_distance_limit
+    )
+
+    # Final mask to ensure we didn't bleed anywhere
+    return cv2.bitwise_and(final_gradient_map, final_gradient_map, mask=receding_white_areas)
+
+
 def process_z_blending(current_white_mask, prior_masks, config, classified_rois, debug_info=None):
     """
     Main entry point for Z-axis blending. Dispatches to the correct blending mode.
@@ -426,6 +514,14 @@ def process_z_blending(current_white_mask, prior_masks, config, classified_rois,
         )
     elif config.blending_mode == ProcessingMode.ENHANCED_EDT:
         return _calculate_receding_gradient_field_enhanced_edt(
+            current_white_mask,
+            prior_masks,
+            config,
+            debug_info
+        )
+    elif config.blending_mode == ProcessingMode.ENHANCED_EDT_V2:
+        # Pass `classified_rois=None` because this mode doesn't use it.
+        return _calculate_receding_gradient_field_enhanced_edt_v2(
             current_white_mask,
             prior_masks,
             config,

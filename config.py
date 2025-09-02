@@ -29,6 +29,7 @@ DEFAULT_NUM_WORKERS = max(1, os.cpu_count() - 1)
 
 class ProcessingMode(Enum):
     ENHANCED_EDT = "enhanced_edt"
+    ENHANCED_EDT_V2 = "enhanced_edt_v2"
     FIXED_FADE = "fixed_fade"
     ROI_FADE = "roi_fade"
     WEIGHTED_STACK = "weighted_stack"
@@ -185,6 +186,9 @@ class Config:
     fixed_fade_distance_receding: float = 10.0
     anisotropic_params: AnisotropicParams = field(default_factory=AnisotropicParams)
     
+    # --- EDT V2 Settings ---
+    distance_lut_params: LutParameters = field(default_factory=LutParameters)
+
     # --- Weighted Stack Mode Settings ---
     weighted_falloff_type: WeightingFalloff = WeightingFalloff.LINEAR
     manual_weights: List[int] = field(default_factory=lambda: [100, 75, 50, 25])
