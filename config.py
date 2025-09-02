@@ -201,6 +201,8 @@ class Config:
     # --- General Settings ---
     thread_count: int = DEFAULT_NUM_WORKERS
     use_numba_jit: bool = False
+    use_tiledb_backend: bool = False
+    tiledb_array_uri: str = "tiledb_array"
     debug_save: bool = False
     xy_blend_pipeline: List[XYBlendOperation] = field(default_factory=lambda: [XYBlendOperation("none")])
 
