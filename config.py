@@ -29,9 +29,20 @@ DEFAULT_NUM_WORKERS = max(1, os.cpu_count() - 1)
 
 class ProcessingMode(Enum):
     ENHANCED_EDT = "enhanced_edt"
+    ENHANCED_EDT_V2 = "enhanced_edt_v2"
     FIXED_FADE = "fixed_fade"
     ROI_FADE = "roi_fade"
     WEIGHTED_STACK = "weighted_stack"
+
+
+class EnhancedEDTv2GradientType(Enum):
+    PARAMETRIC = "parametric"
+    LUT = "lut"
+
+class EnhancedEDTv2CurveType(Enum):
+    LINEAR = "linear"
+    GAMMA = "gamma"
+    EXPONENTIAL = "exponential"
 
 
 class WeightingFalloff(Enum):
@@ -159,6 +170,23 @@ class AnisotropicParams:
 
 
 @dataclass
+class EnhancedEDTv2Parameters:
+    """Parameters for the Enhanced EDT v2 processing mode."""
+    gradient_type: EnhancedEDTv2GradientType = EnhancedEDTv2GradientType.PARAMETRIC
+    curve_type: EnhancedEDTv2CurveType = EnhancedEDTv2CurveType.GAMMA
+    factor: float = 2.0  # Used for gamma and exponential curves
+    lut_params: LutParameters = field(default_factory=LutParameters)
+
+    def __post_init__(self):
+        if isinstance(self.gradient_type, str):
+            self.gradient_type = EnhancedEDTv2GradientType(self.gradient_type)
+        if isinstance(self.curve_type, str):
+            self.curve_type = EnhancedEDTv2CurveType(self.curve_type)
+        if isinstance(self.lut_params, dict):
+            self.lut_params = LutParameters(**self.lut_params)
+
+
+@dataclass
 class Config:
     """
     Main application configuration, updated with new UI fields.
@@ -189,6 +217,9 @@ class Config:
     weighted_falloff_type: WeightingFalloff = WeightingFalloff.LINEAR
     manual_weights: List[int] = field(default_factory=lambda: [100, 75, 50, 25])
     fade_distances_receding: List[float] = field(default_factory=lambda: [10.0, 10.0, 10.0, 10.0])
+
+    # --- Enhanced EDT v2 Settings ---
+    enhanced_edt_v2_params: EnhancedEDTv2Parameters = field(default_factory=EnhancedEDTv2Parameters)
 
     # --- Overhang Settings (for future use) ---
     overhang_layers: int = 0
@@ -257,6 +288,11 @@ class Config:
                         anisotropic_field_names = {f.name for f in fields(AnisotropicParams)}
                         filtered_anisotropic_data = {k: v for k, v in value.items() if k in anisotropic_field_names}
                         setattr(config_instance, key, AnisotropicParams(**filtered_anisotropic_data))
+                elif key == 'enhanced_edt_v2_params':
+                    if isinstance(value, dict):
+                        edt_v2_field_names = {f.name for f in fields(EnhancedEDTv2Parameters)}
+                        filtered_edt_v2_data = {k: v for k, v in value.items() if k in edt_v2_field_names}
+                        setattr(config_instance, key, EnhancedEDTv2Parameters(**filtered_edt_v2_data))
                 else:
                     if field_obj.type is bool and isinstance(value, str):
                         value = value.lower() in ('true', '1', 't', 'y')

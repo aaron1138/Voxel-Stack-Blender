@@ -23,8 +23,56 @@ import os
 import math
 from typing import Optional, Callable, List
 from scipy.interpolate import CubicSpline # NEW: Add SciPy for spline interpolation
+from config import LutParameters
+
 
 _DEFAULT_Z_REMAP_LUT_ARRAY = np.arange(256, dtype=np.uint8)
+
+def get_lut_from_params(lut_params: LutParameters) -> Optional[np.ndarray]:
+    """
+    Master function to get a LUT array based on a LutParameters object.
+    It dispatches to the correct generation function or loads from a file.
+    """
+    if not lut_params:
+        return None
+    try:
+        if lut_params.lut_source == "generated":
+            args = (lut_params.input_min, lut_params.input_max, lut_params.output_min, lut_params.output_max)
+            gen_type = lut_params.lut_generation_type.lower()
+
+            if gen_type == "spline":
+                return generate_spline_lut(lut_params.spline_points, *args)
+            elif gen_type == "linear":
+                return generate_linear_lut(*args)
+            elif gen_type == "gamma":
+                return generate_gamma_lut(lut_params.gamma_value, *args)
+            elif gen_type == "s_curve":
+                return generate_s_curve_lut(lut_params.s_curve_contrast, *args)
+            elif gen_type == "log":
+                return generate_log_lut(lut_params.log_param, *args)
+            elif gen_type == "exp":
+                return generate_exp_lut(lut_params.exp_param, *args)
+            elif gen_type == "sqrt":
+                return generate_sqrt_lut(lut_params.sqrt_param, *args)
+            elif gen_type == "rodbard":
+                return generate_rodbard_lut(lut_params.rodbard_param, *args)
+            else:
+                # Fallback for unknown generation type
+                return generate_linear_lut(*args)
+
+        elif lut_params.lut_source == "file":
+            if lut_params.fixed_lut_path and os.path.exists(lut_params.fixed_lut_path):
+                return load_lut(lut_params.fixed_lut_path)
+            else:
+                # File path is invalid, return a default LUT
+                return get_default_z_lut()
+
+    except Exception as e:
+        print(f"Error getting LUT from parameters: {e}")
+        # In case of any error, return a safe default
+        return get_default_z_lut()
+
+    return get_default_z_lut() # Fallback
 
 def get_default_z_lut() -> np.ndarray:
     """Returns a copy of the default Z-remapping LUT (linear pass-through)."""

@@ -31,10 +31,11 @@ from PySide6.QtGui import QIntValidator, QDoubleValidator
 
 from config import (
     app_config as config, Config, DEFAULT_NUM_WORKERS, upgrade_config,
-    ProcessingMode, WeightingFalloff
+    ProcessingMode, WeightingFalloff, EnhancedEDTv2GradientType, EnhancedEDTv2CurveType
 )
 from pyside_xy_blend_tab import XYBlendTab
 from processing_pipeline import ProcessingPipelineThread
+from lut_editor_widget import LutEditorWidget
 
 class ImageProcessorApp(QWidget):
     """The main application window, now with a restructured UI."""
@@ -156,6 +157,7 @@ class ImageProcessorApp(QWidget):
         blending_mode_layout.addWidget(QLabel("Blending Mode:"))
         self.blending_mode_combo = QComboBox()
         self.blending_mode_combo.addItem("Enhanced EDT", ProcessingMode.ENHANCED_EDT)
+        self.blending_mode_combo.addItem("Enhanced EDT v2", ProcessingMode.ENHANCED_EDT_V2)
         self.blending_mode_combo.addItem("Fixed Fade", ProcessingMode.FIXED_FADE)
         self.blending_mode_combo.addItem("ROI Mode (Slow)", ProcessingMode.ROI_FADE)
         blending_mode_layout.addWidget(self.blending_mode_combo)
@@ -244,6 +246,8 @@ class ImageProcessorApp(QWidget):
 
         blending_layout.addWidget(self.roi_settings_group)
 
+        self._create_edt_v2_ui(blending_layout)
+
         main_processing_layout.addWidget(blending_group)
         
         general_group = QGroupBox("General")
@@ -291,6 +295,53 @@ class ImageProcessorApp(QWidget):
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(self.status_label)
 
+    def _create_edt_v2_ui(self, parent_layout):
+        """Creates the UI components for the Enhanced EDT v2 settings."""
+        self.edt_v2_settings_group = QGroupBox("Enhanced EDT v2 Settings")
+        self.edt_v2_settings_group.setVisible(False)
+        edt_v2_layout = QVBoxLayout(self.edt_v2_settings_group)
+
+        # Gradient Type Selection
+        gradient_type_layout = QHBoxLayout()
+        gradient_type_layout.addWidget(QLabel("Gradient Type:"))
+        self.edt_v2_gradient_type_combo = QComboBox()
+        self.edt_v2_gradient_type_combo.addItem("Parametric Curve", EnhancedEDTv2GradientType.PARAMETRIC)
+        self.edt_v2_gradient_type_combo.addItem("Custom LUT", EnhancedEDTv2GradientType.LUT)
+        gradient_type_layout.addWidget(self.edt_v2_gradient_type_combo)
+        gradient_type_layout.addStretch(1)
+        edt_v2_layout.addLayout(gradient_type_layout)
+
+        # Stacked widget for params
+        self.edt_v2_params_stack = QStackedWidget()
+        edt_v2_layout.addWidget(self.edt_v2_params_stack)
+
+        # Parametric controls widget
+        parametric_widget = QWidget()
+        parametric_layout = QGridLayout(parametric_widget)
+        parametric_layout.addWidget(QLabel("Curve Type:"), 0, 0)
+        self.edt_v2_curve_type_combo = QComboBox()
+        self.edt_v2_curve_type_combo.addItem("Gamma", EnhancedEDTv2CurveType.GAMMA)
+        self.edt_v2_curve_type_combo.addItem("Exponential", EnhancedEDTv2CurveType.EXPONENTIAL)
+        self.edt_v2_curve_type_combo.addItem("Linear", EnhancedEDTv2CurveType.LINEAR)
+        parametric_layout.addWidget(self.edt_v2_curve_type_combo, 0, 1)
+
+        parametric_layout.addWidget(QLabel("Factor:"), 1, 0)
+        self.edt_v2_factor_edit = QLineEdit("2.0")
+        self.edt_v2_factor_edit.setValidator(QDoubleValidator(0.01, 100.0, 2, self))
+        parametric_layout.addWidget(self.edt_v2_factor_edit, 1, 1)
+        parametric_layout.setColumnStretch(2, 1)
+        self.edt_v2_params_stack.addWidget(parametric_widget)
+
+        # LUT controls widget (reusing LutEditorWidget)
+        # We need a dummy parent tab object for the constructor
+        class DummyParentTab:
+            def _update_lut_table(self, lut): pass
+        self.edt_v2_lut_editor = LutEditorWidget(DummyParentTab())
+        self.edt_v2_params_stack.addWidget(self.edt_v2_lut_editor)
+
+        parent_layout.addWidget(self.edt_v2_settings_group)
+
+
     def _connect_signals(self):
         self.input_folder_button.clicked.connect(lambda: self.browse_folder(self.input_folder_edit))
         self.output_folder_button.clicked.connect(lambda: self.browse_folder(self.output_folder_edit))
@@ -302,6 +353,11 @@ class ImageProcessorApp(QWidget):
         self.save_config_button.clicked.connect(self._save_config_to_file)
         self.load_config_button.clicked.connect(self._load_config_from_file)
         self.start_stop_button.clicked.connect(self.toggle_processing)
+
+        # EDT v2 signals
+        self.edt_v2_gradient_type_combo.currentIndexChanged.connect(
+            lambda index: self.edt_v2_params_stack.setCurrentIndex(index)
+        )
 
     def _autodetect_uvtools(self):
         """Checks for UVTools in the default location and populates the path if found."""
@@ -317,10 +373,10 @@ class ImageProcessorApp(QWidget):
         selected_mode = self.blending_mode_combo.itemData(index)
 
         # Show/hide ROI settings
-        if selected_mode == ProcessingMode.ROI_FADE:
-            self.roi_settings_group.setVisible(True)
-        else:
-            self.roi_settings_group.setVisible(False)
+        self.roi_settings_group.setVisible(selected_mode == ProcessingMode.ROI_FADE)
+
+        # Show/hide EDT v2 settings
+        self.edt_v2_settings_group.setVisible(selected_mode == ProcessingMode.ENHANCED_EDT_V2)
 
         # Update fade distance label text
         if selected_mode == ProcessingMode.ENHANCED_EDT:
@@ -365,6 +421,18 @@ class ImageProcessorApp(QWidget):
         index = self.blending_mode_combo.findData(config.blending_mode)
         self.blending_mode_combo.setCurrentIndex(index if index >= 0 else 0)
         self.on_blending_mode_changed(self.blending_mode_combo.currentIndex())
+
+        # --- Enhanced EDT v2 Settings ---
+        edt_v2_params = config.enhanced_edt_v2_params
+        edt_v2_grad_index = self.edt_v2_gradient_type_combo.findData(edt_v2_params.gradient_type)
+        self.edt_v2_gradient_type_combo.setCurrentIndex(edt_v2_grad_index if edt_v2_grad_index >= 0 else 0)
+        self.edt_v2_params_stack.setCurrentIndex(edt_v2_grad_index if edt_v2_grad_index >= 0 else 0)
+
+        edt_v2_curve_index = self.edt_v2_curve_type_combo.findData(edt_v2_params.curve_type)
+        self.edt_v2_curve_type_combo.setCurrentIndex(edt_v2_curve_index if edt_v2_curve_index >= 0 else 0)
+        self.edt_v2_factor_edit.setText(str(edt_v2_params.factor))
+        self.edt_v2_lut_editor.set_lut_params(edt_v2_params.lut_params)
+
 
         # --- ROI Settings ---
         self.roi_min_size_edit.setText(str(config.roi_params.min_size))
@@ -437,6 +505,15 @@ class ImageProcessorApp(QWidget):
 
         try: config.fixed_fade_distance_receding = float(self.fade_dist_receding_edit.text().replace(',', '.'))
         except ValueError: config.fixed_fade_distance_receding = 10.0
+
+        # --- Enhanced EDT v2 ---
+        config.enhanced_edt_v2_params.gradient_type = self.edt_v2_gradient_type_combo.currentData()
+        config.enhanced_edt_v2_params.curve_type = self.edt_v2_curve_type_combo.currentData()
+        try:
+            config.enhanced_edt_v2_params.factor = float(self.edt_v2_factor_edit.text().replace(',', '.'))
+        except ValueError:
+            config.enhanced_edt_v2_params.factor = 2.0
+        # The LUT params are updated by reference, so we don't need to explicitly save them here.
 
         config.anisotropic_params.enabled = self.anisotropic_checkbox.isChecked()
         try: config.anisotropic_params.x_factor = float(self.anisotropic_x_edit.text().replace(',', '.'))

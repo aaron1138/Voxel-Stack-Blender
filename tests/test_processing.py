@@ -7,7 +7,7 @@ import pytest
 # Add the root directory to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from config import Config, ProcessingMode
+from config import Config, ProcessingMode, EnhancedEDTv2GradientType, EnhancedEDTv2CurveType
 from processing_core import (
     _calculate_weighted_receding_gradient_field, find_prior_combined_white_mask,
     _calculate_receding_gradient_field_enhanced_edt_scipy,
@@ -194,3 +194,70 @@ def test_anisotropic_correction(base_config):
     # Check that some gradient exists
     assert val_x > 0
     assert val_y > 0
+
+def test_enhanced_edt_v2_logic(base_config):
+    """
+    Tests the new Enhanced EDT v2 logic for both Parametric and LUT modes.
+    """
+    # 1. Setup
+    cfg = base_config
+    cfg.blending_mode = ProcessingMode.ENHANCED_EDT_V2
+
+    # A simple line as the current feature
+    current_mask = np.zeros((100, 100), dtype=np.uint8)
+    cv2.line(current_mask, (50, 0), (50, 100), 255, 1)
+
+    # A prior mask that creates a receding area to the left
+    prior_mask = np.zeros_like(current_mask)
+    cv2.rectangle(prior_mask, (20, 0), (50, 100), 255, -1)
+
+    from processing_core import _calculate_receding_gradient_field_enhanced_edt_v2
+
+    # 2. Test Parametric (Gamma) Mode
+    cfg.enhanced_edt_v2_params.gradient_type = EnhancedEDTv2GradientType.PARAMETRIC
+    cfg.enhanced_edt_v2_params.curve_type = EnhancedEDTv2CurveType.GAMMA
+    cfg.enhanced_edt_v2_params.factor = 2.0 # Squaring the normalized value
+
+    gradient_gamma = _calculate_receding_gradient_field_enhanced_edt_v2(current_mask, [prior_mask], cfg)
+
+    # Point halfway into the receding area (dist=15 from edge, max dist=30)
+    # Raw inverted norm = 1.0 - (15/30) = 0.5
+    # Gamma corrected = 0.5 ^ 2.0 = 0.25
+    # Final value = 0.25 * 255 = 63.75
+    val_gamma = gradient_gamma[50, 35] # x=35, y=50 -> dist=15
+    assert 60 < val_gamma < 65
+
+    # 3. Test LUT Mode
+    cfg.enhanced_edt_v2_params.gradient_type = EnhancedEDTv2GradientType.LUT
+    # Create a simple inverting LUT
+    inverting_lut = np.arange(255, -1, -1, dtype=np.uint8)
+    cfg.enhanced_edt_v2_params.lut_params.lut_source = "generated" # Mocking as if it was generated
+    # To test this properly, we need to mock lut_manager.get_lut_from_params
+    # For simplicity here, we'll rely on the logic being correct and test the effect.
+    # Let's assume the LUT is passed correctly. We can create a simple one.
+
+    # Let's create a LUT that maps 0->255, 127->0, 255->255
+    custom_lut = np.zeros(256, dtype=np.uint8)
+    custom_lut[0:128] = np.linspace(255, 0, 128, dtype=np.uint8)
+    custom_lut[128:256] = np.linspace(0, 255, 128, dtype=np.uint8)
+
+    # We need to get this LUT into the function. The function uses lut_manager.
+    # A direct way to test is to temporarily patch the lut_manager.
+    import lut_manager
+    original_get_lut = lut_manager.get_lut_from_params
+    lut_manager.get_lut_from_params = lambda params: custom_lut
+
+    gradient_lut = _calculate_receding_gradient_field_enhanced_edt_v2(current_mask, [prior_mask], cfg)
+
+    # Restore original function
+    lut_manager.get_lut_from_params = original_get_lut
+
+    # Point halfway (raw inverted norm = 0.5, LUT index = 0.5*255=127)
+    # LUT value at 127 should be ~0
+    val_lut_mid = gradient_lut[50, 35]
+    assert val_lut_mid < 2
+
+    # Point very close to edge (raw inverted norm ~1.0, LUT index ~255)
+    # LUT value at 255 is 255. The calculated value is ~236 due to distance transform details.
+    val_lut_near = gradient_lut[50, 49]
+    assert val_lut_near > 230

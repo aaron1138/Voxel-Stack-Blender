@@ -23,7 +23,8 @@ import os
 from scipy import ndimage
 import numba
 
-from config import ProcessingMode
+from config import ProcessingMode, EnhancedEDTv2GradientType, EnhancedEDTv2CurveType
+import lut_manager
 
 def load_image(filepath):
     """
@@ -404,6 +405,91 @@ def _calculate_receding_gradient_field_enhanced_edt(current_white_mask, prior_bi
     return cv2.bitwise_and(final_gradient_map, final_gradient_map, mask=receding_white_areas)
 
 
+def _calculate_receding_gradient_field_enhanced_edt_v2(current_white_mask, prior_binary_masks, config, debug_info=None):
+    """
+    Calculates receding gradients using the Enhanced EDT v2 method, which allows
+    for parametric or LUT-based gradient curves on top of the distance-normalized field.
+    """
+    if not prior_binary_masks:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    # --- Initial setup similar to original Enhanced EDT ---
+    prior_white_combined_mask = find_prior_combined_white_mask(prior_binary_masks)
+    if prior_white_combined_mask is None:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    receding_white_areas = cv2.bitwise_and(prior_white_combined_mask, cv2.bitwise_not(current_white_mask))
+    if cv2.countNonZero(receding_white_areas) == 0:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    distance_transform_src = cv2.bitwise_not(current_white_mask)
+    distance_map = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5)
+    receding_distance_map = cv2.bitwise_and(distance_map, distance_map, mask=receding_white_areas)
+
+    num_labels, labels = cv2.connectedComponents(receding_white_areas)
+    if num_labels <= 1:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    # --- Normalize distances within each component (similar to original EDT) ---
+    max_vals_per_label = ndimage.maximum(receding_distance_map, labels=labels, index=np.arange(1, num_labels))
+    max_vals_lut = np.concatenate(([0], max_vals_per_label))
+    max_map = max_vals_lut[labels]
+
+    # Avoid division by zero
+    max_map[max_map <= 0] = 1.0
+
+    # Normalized distance [0, 1] across each island
+    normalized_dist_map = receding_distance_map / max_map
+    normalized_dist_map = np.clip(normalized_dist_map, 0.0, 1.0)
+
+    # Invert so 0.0 is far and 1.0 is near
+    inverted_normalized_map = 1.0 - normalized_dist_map
+
+    # --- V2 Logic: Apply selected gradient curve ---
+    params = config.enhanced_edt_v2_params
+
+    if params.gradient_type == EnhancedEDTv2GradientType.PARAMETRIC:
+        factor = params.factor if params.factor > 0 else 1.0
+
+        if params.curve_type == EnhancedEDTv2CurveType.GAMMA:
+            # Apply gamma correction
+            final_curved_map = np.power(inverted_normalized_map, factor)
+        elif params.curve_type == EnhancedEDTv2CurveType.EXPONENTIAL:
+            # Apply exponential curve
+            # f(x) = (e^(k*x) - 1) / (e^k - 1)
+            k = factor
+            exp_k = np.exp(k)
+            final_curved_map = (np.exp(k * inverted_normalized_map) - 1) / (exp_k - 1)
+        else: # Linear (no change)
+            final_curved_map = inverted_normalized_map
+
+    elif params.gradient_type == EnhancedEDTv2GradientType.LUT:
+        try:
+            # Get the LUT from the manager
+            lut = lut_manager.get_lut_from_params(params.lut_params)
+            if lut is None: # Fallback to default if load fails
+                lut = np.arange(256, dtype=np.uint8)
+
+            # Scale map to 0-255 for LUT indexing
+            map_for_lut = (inverted_normalized_map * 255).astype(np.uint8)
+            # Apply LUT
+            final_curved_map_8bit = cv2.LUT(map_for_lut, lut)
+            # Convert back to float [0, 1] for consistency before final scaling
+            final_curved_map = final_curved_map_8bit.astype(np.float32) / 255.0
+
+        except Exception as e:
+            print(f"Error applying LUT in Enhanced EDT v2: {e}. Defaulting to linear gradient.")
+            final_curved_map = inverted_normalized_map
+
+    else: # Fallback
+        final_curved_map = inverted_normalized_map
+
+    # Convert to 8-bit image
+    final_gradient_map = (255 * final_curved_map).astype(np.uint8)
+
+    return cv2.bitwise_and(final_gradient_map, final_gradient_map, mask=receding_white_areas)
+
+
 def process_z_blending(current_white_mask, prior_masks, config, classified_rois, debug_info=None):
     """
     Main entry point for Z-axis blending. Dispatches to the correct blending mode.
@@ -426,6 +512,13 @@ def process_z_blending(current_white_mask, prior_masks, config, classified_rois,
         )
     elif config.blending_mode == ProcessingMode.ENHANCED_EDT:
         return _calculate_receding_gradient_field_enhanced_edt(
+            current_white_mask,
+            prior_masks,
+            config,
+            debug_info
+        )
+    elif config.blending_mode == ProcessingMode.ENHANCED_EDT_V2:
+        return _calculate_receding_gradient_field_enhanced_edt_v2(
             current_white_mask,
             prior_masks,
             config,
