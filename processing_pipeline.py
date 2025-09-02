@@ -17,6 +17,7 @@ import xy_blend_processor
 from roi_tracker import ROITracker
 import uvtools_wrapper
 from logger import Logger
+import tiledb_pipeline
 
 class ProcessingPipelineThread(QThread):
     """
@@ -119,6 +120,20 @@ class ProcessingPipelineThread(QThread):
         self.logger.log("Run started.")
         self.logger.log_config(self.app_config)
         self.status_update.emit("Processing started...")
+
+        if self.app_config.use_tiledb:
+            try:
+                tiledb_pipeline.run_tiledb_pipeline(self.app_config, self.status_update.emit)
+                self.status_update.emit("Processing complete!")
+            except Exception as e:
+                self.error_occurred = True
+                import traceback
+                error_info = f"A critical error occurred in the TileDB pipeline: {e}\n\n{traceback.format_exc()}"
+                self.logger.log(f"CRITICAL ERROR in TileDB pipeline: {error_info}")
+                self.error_signal.emit(error_info)
+            finally:
+                self.finished_signal.emit()
+            return
 
         numeric_pattern = re.compile(r'(\d+)\.\w+$')
         def get_numeric_part(filename):
