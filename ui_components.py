@@ -264,6 +264,10 @@ class ImageProcessorApp(QWidget):
         self.numba_checkbox.setToolTip("Uses a Just-In-Time compiler (Numba) for the Enhanced EDT calculation, which may be significantly faster. Requires the 'numba' package.")
         general_layout.addWidget(self.numba_checkbox)
 
+        self.tiledb_checkbox = QCheckBox("Enable TileDB Backend for Slice Processing")
+        self.tiledb_checkbox.setToolTip("Uses TileDB to store and access image slices, enabling faster slicing in all dimensions. Requires the 'tiledb' package.")
+        general_layout.addWidget(self.tiledb_checkbox)
+
         self.debug_checkbox = QCheckBox("Save Intermediate Debug Images")
         general_layout.addWidget(self.debug_checkbox)
         
@@ -378,6 +382,7 @@ class ImageProcessorApp(QWidget):
         # --- General Settings ---
         self.thread_count_edit.setText(str(config.thread_count))
         self.numba_checkbox.setChecked(config.use_numba_jit)
+        self.tiledb_checkbox.setChecked(config.use_tiledb)
         self.debug_checkbox.setChecked(config.debug_save)
         
         self.xy_blend_tab.apply_settings(config)
@@ -447,6 +452,7 @@ class ImageProcessorApp(QWidget):
         try: config.thread_count = int(self.thread_count_edit.text())
         except ValueError: config.thread_count = DEFAULT_NUM_WORKERS
         config.use_numba_jit = self.numba_checkbox.isChecked()
+        config.use_tiledb = self.tiledb_checkbox.isChecked()
         config.debug_save = self.debug_checkbox.isChecked()
         
         config.save("app_config.json")

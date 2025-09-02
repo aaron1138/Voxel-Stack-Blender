@@ -24,22 +24,41 @@ from scipy import ndimage
 import numba
 
 from config import ProcessingMode
+import tiledb_utils
 
-def load_image(filepath):
+def load_image(filepath, use_tiledb=False, layer_index=None):
     """
     Loads an 8-bit grayscale image and creates a binary version (0 or 255).
+    Can load from a standard image file or a slice from a TileDB array.
 
     Args:
-        filepath (str): The path to the image file.
+        filepath (str): The path to the image file or the URI of the TileDB array.
+        use_tiledb (bool): If True, load from TileDB. Defaults to False.
+        layer_index (int, optional): The Z-slice index to load from TileDB. Required if use_tiledb is True.
 
     Returns:
         tuple: A tuple containing the binary image and the original grayscale image.
                Returns (None, None) if the image cannot be loaded.
     """
-    img = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
+    if use_tiledb:
+        if layer_index is None:
+            print("Warning: use_tiledb is True but layer_index is not provided.")
+            return None, None
+        try:
+            # In TileDB mode, 'filepath' is the array URI
+            img = tiledb_utils.read_xy_slice(filepath, layer_index)
+        except Exception as e:
+            print(f"Warning: Could not load slice {layer_index} from TileDB array at {filepath}: {e}")
+            return None, None
+    else:
+        img = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
+
     if img is None:
-        print(f"Warning: Could not load image at {filepath}")
+        # The warning for TileDB is printed in the except block, so this is for the file case
+        if not use_tiledb:
+            print(f"Warning: Could not load image at {filepath}")
         return None, None
+
     # Ensure it's truly binary (0 for black, 255 for white) for the mask logic
     _, binary_img = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)
     return binary_img, img

@@ -16,6 +16,8 @@ import processing_core as core
 import xy_blend_processor
 from roi_tracker import ROITracker
 import uvtools_wrapper
+import tiledb_utils
+import tiledb
 from logger import Logger
 
 class ProcessingPipelineThread(QThread):
@@ -160,6 +162,26 @@ class ProcessingPipelineThread(QThread):
                 return
 
             self.logger.log(f"Found {total_images} images to process.")
+
+            tiledb_array_uri = ""
+            if self.app_config.use_tiledb:
+                self.status_update.emit("Initializing TileDB backend and ingesting images...")
+                self.logger.log("Initializing TileDB backend.")
+                try:
+                    tiledb_array_uri = os.path.join(self.session_temp_folder, "tiledb_slice_data")
+                    full_image_paths = [os.path.join(input_path, f) for f in image_filenames_filtered]
+                    tiledb_utils.ingest_images_to_tiledb(full_image_paths, tiledb_array_uri)
+                    self.status_update.emit("TileDB ingestion complete.")
+                    self.logger.log("TileDB ingestion complete.")
+                except (Exception, tiledb.TileDBError) as e:
+                    self.error_occurred = True
+                    import traceback
+                    error_info = f"A critical error occurred during TileDB setup: {e}\n\n{traceback.format_exc()}"
+                    self.logger.log(f"CRITICAL ERROR in TileDB setup: {error_info}")
+                    self.error_signal.emit(error_info)
+                    self.stop_processing()
+                    return
+
             prior_binary_masks_cache = collections.deque(maxlen=self.app_config.receding_layers)
             tracker = ROITracker()
 
@@ -196,8 +218,17 @@ class ProcessingPipelineThread(QThread):
                         process_completed_futures(done)
 
                     self.status_update.emit(f"Analyzing {filename} ({i + 1}/{total_images})")
-                    filepath = os.path.join(input_path, filename)
-                    binary_image, original_image = core.load_image(filepath)
+                    filepath = os.path.join(input_path, filename) # Still needed for output naming
+
+                    if self.app_config.use_tiledb:
+                        binary_image, original_image = core.load_image(
+                            filepath=tiledb_array_uri,
+                            use_tiledb=True,
+                            layer_index=i
+                        )
+                    else:
+                        binary_image, original_image = core.load_image(filepath)
+
                     if binary_image is None:
                         self.status_update.emit(f"Skipping unloadable image: {filename}")
                         total_images = max(1, total_images - 1)
