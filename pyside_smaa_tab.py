@@ -65,4 +65,4 @@ class SmaaTab(QWidget):
     def save_settings(self):
         """Saves settings from the widgets to the global config."""
         # The lut_params_changed signal already handles this, but we can be explicit.
-        self._save_z_correction_lut_params()
+        self._on_z_lut_params_changed()
