@@ -158,6 +158,7 @@ class ImageProcessorApp(QWidget):
         self.blending_mode_combo.addItem("Enhanced EDT", ProcessingMode.ENHANCED_EDT)
         self.blending_mode_combo.addItem("Fixed Fade", ProcessingMode.FIXED_FADE)
         self.blending_mode_combo.addItem("ROI Mode (Slow)", ProcessingMode.ROI_FADE)
+        self.blending_mode_combo.addItem("TileDB 3D AA", ProcessingMode.TILEDB_3D_AA)
         blending_mode_layout.addWidget(self.blending_mode_combo)
         blending_mode_layout.addStretch(1)
         blending_layout.addLayout(blending_mode_layout)
@@ -264,6 +265,10 @@ class ImageProcessorApp(QWidget):
         self.numba_checkbox.setToolTip("Uses a Just-In-Time compiler (Numba) for the Enhanced EDT calculation, which may be significantly faster. Requires the 'numba' package.")
         general_layout.addWidget(self.numba_checkbox)
 
+        self.tiledb_checkbox = QCheckBox("Enable TileDB Backend (for 3D Anti-Aliasing)")
+        self.tiledb_checkbox.setToolTip("Uses TileDB to store image slices, enabling 3D anti-aliasing. Requires 'tiledb' package.")
+        general_layout.addWidget(self.tiledb_checkbox)
+
         self.debug_checkbox = QCheckBox("Save Intermediate Debug Images")
         general_layout.addWidget(self.debug_checkbox)
         
@@ -299,6 +304,8 @@ class ImageProcessorApp(QWidget):
         self.uvtools_input_file_button.clicked.connect(lambda: self.browse_file(self.uvtools_input_file_edit, "Select Input Slice File"))
         self.input_mode_group.idClicked.connect(self.on_input_mode_changed)
         self.blending_mode_combo.currentIndexChanged.connect(self.on_blending_mode_changed)
+        self.numba_checkbox.toggled.connect(self.on_numba_toggled)
+        self.tiledb_checkbox.toggled.connect(self.on_tiledb_toggled)
         self.save_config_button.clicked.connect(self._save_config_to_file)
         self.load_config_button.clicked.connect(self._load_config_from_file)
         self.start_stop_button.clicked.connect(self.toggle_processing)
@@ -327,6 +334,14 @@ class ImageProcessorApp(QWidget):
             self.fade_dist_label.setText("Max Fade (pixels):")
         else:
             self.fade_dist_label.setText("Fade Distance (pixels):")
+
+    def on_numba_toggled(self, checked):
+        self.tiledb_checkbox.setEnabled(checked)
+        if not checked:
+            self.tiledb_checkbox.setChecked(False)
+
+    def on_tiledb_toggled(self, checked):
+        self.update_blending_mode_options()
 
     def browse_folder(self, line_edit):
         folder = QFileDialog.getExistingDirectory(self, "Select Folder", line_edit.text())
@@ -378,9 +393,25 @@ class ImageProcessorApp(QWidget):
         # --- General Settings ---
         self.thread_count_edit.setText(str(config.thread_count))
         self.numba_checkbox.setChecked(config.use_numba_jit)
+        self.tiledb_checkbox.setChecked(config.use_tiledb)
+        self.tiledb_checkbox.setEnabled(config.use_numba_jit)
+        self.update_blending_mode_options()
         self.debug_checkbox.setChecked(config.debug_save)
         
         self.xy_blend_tab.apply_settings(config)
+
+    def update_blending_mode_options(self):
+        """Shows or hides the TileDB AA option based on whether the TileDB backend is enabled."""
+        tiledb_enabled = self.tiledb_checkbox.isChecked()
+        tiledb_aa_index = self.blending_mode_combo.findData(ProcessingMode.TILEDB_3D_AA)
+
+        if tiledb_aa_index != -1:
+            self.blending_mode_combo.model().item(tiledb_aa_index).setEnabled(tiledb_enabled)
+
+        # If TileDB is disabled and the AA mode was selected, switch to a default
+        if not tiledb_enabled and self.blending_mode_combo.currentData() == ProcessingMode.TILEDB_3D_AA:
+            default_index = self.blending_mode_combo.findData(ProcessingMode.ENHANCED_EDT)
+            self.blending_mode_combo.setCurrentIndex(default_index)
 
     def save_settings(self):
         """Saves current UI settings to the global config object and QSettings."""
@@ -447,6 +478,7 @@ class ImageProcessorApp(QWidget):
         try: config.thread_count = int(self.thread_count_edit.text())
         except ValueError: config.thread_count = DEFAULT_NUM_WORKERS
         config.use_numba_jit = self.numba_checkbox.isChecked()
+        config.use_tiledb = self.tiledb_checkbox.isChecked()
         config.debug_save = self.debug_checkbox.isChecked()
         
         config.save("app_config.json")
