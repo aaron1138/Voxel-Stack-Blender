@@ -332,7 +332,10 @@ class LutEditorWidget(QWidget):
         points_to_show = self._lut_params.spline_points if is_spline_mode else None
         self.preview_canvas.set_interactive(is_spline_mode)
         self.preview_canvas.update_plot(curve_data=generated_lut, points_data=points_to_show)
-        self.parent_tab._update_lut_table(generated_lut)
+
+        # Check if the parent tab has the method before calling it
+        if hasattr(self.parent_tab, '_update_lut_table'):
+            self.parent_tab._update_lut_table(generated_lut)
 
     def _load_lut_from_file(self):
         filepath, _ = QFileDialog.getOpenFileName(self, "Load LUT File", "", "JSON Files (*.json)")
