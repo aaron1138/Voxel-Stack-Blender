@@ -34,8 +34,8 @@ from config import (
     ProcessingMode, WeightingFalloff
 )
 from pyside_xy_blend_tab import XYBlendTab
+from pyside_smaa_tab import SmaaTab
 from processing_pipeline import ProcessingPipelineThread
-from lut_editor_widget import LutEditorWidget
 
 class ImageProcessorApp(QWidget):
     """The main application window, now with a restructured UI."""
@@ -246,18 +246,6 @@ class ImageProcessorApp(QWidget):
 
         blending_layout.addWidget(self.roi_settings_group)
 
-        self.smaa_settings_group = QGroupBox("Morphological AA Settings")
-        self.smaa_settings_group.setVisible(False) # Hidden by default
-        smaa_layout = QVBoxLayout(self.smaa_settings_group)
-        smaa_info_label = QLabel("<i>Note: This mode requires the TileDB Backend to be enabled. It performs anti-aliasing on XY, XZ, and YZ planes.</i>")
-        smaa_info_label.setWordWrap(True)
-        smaa_layout.addWidget(smaa_info_label)
-
-        self.z_correction_lut_editor = LutEditorWidget(self)
-        smaa_layout.addWidget(self.z_correction_lut_editor)
-
-        blending_layout.addWidget(self.smaa_settings_group)
-
         main_processing_layout.addWidget(blending_group)
         
         general_group = QGroupBox("General")
@@ -299,6 +287,10 @@ class ImageProcessorApp(QWidget):
         self.xy_blend_tab = XYBlendTab(self)
         self.tab_widget.addTab(self.xy_blend_tab, "XY Blend Pipeline")
 
+        self.smaa_tab = SmaaTab(self)
+        self.smaa_tab_index = self.tab_widget.addTab(self.smaa_tab, "Morphological AA")
+        self.tab_widget.setTabVisible(self.smaa_tab_index, False)
+
         self.start_stop_button = QPushButton("Start Processing")
         self.start_stop_button.setMinimumHeight(40)
         main_layout.addWidget(self.start_stop_button)
@@ -320,7 +312,6 @@ class ImageProcessorApp(QWidget):
         self.save_config_button.clicked.connect(self._save_config_to_file)
         self.load_config_button.clicked.connect(self._load_config_from_file)
         self.start_stop_button.clicked.connect(self.toggle_processing)
-        self.z_correction_lut_editor.lut_params_changed.connect(self._save_z_correction_lut_params)
 
     def _autodetect_uvtools(self):
         """Checks for UVTools in the default location and populates the path if found."""
@@ -332,19 +323,17 @@ class ImageProcessorApp(QWidget):
     def on_input_mode_changed(self, stack_index):
         self.io_stacked_widget.setCurrentIndex(stack_index)
 
-    def _save_z_correction_lut_params(self):
-        # This method is called whenever the LUT editor's params change.
-        # We can just update the config object directly.
-        config.z_correction_lut = self.z_correction_lut_editor._lut_params
-
     def on_blending_mode_changed(self, index):
         selected_mode = self.blending_mode_combo.itemData(index)
 
         # Show/hide ROI settings
         self.roi_settings_group.setVisible(selected_mode == ProcessingMode.ROI_FADE)
 
-        # Show/hide SMAA settings
-        self.smaa_settings_group.setVisible(selected_mode == ProcessingMode.MORPHOLOGICAL_AA)
+        # Show/hide SMAA tab
+        is_smaa_mode = (selected_mode == ProcessingMode.MORPHOLOGICAL_AA)
+        self.tab_widget.setTabVisible(self.smaa_tab_index, is_smaa_mode)
+        if is_smaa_mode:
+            self.tab_widget.setCurrentIndex(self.smaa_tab_index)
 
         # Update fade distance label text
         if selected_mode == ProcessingMode.ENHANCED_EDT:
@@ -399,9 +388,6 @@ class ImageProcessorApp(QWidget):
         self.support_max_layer_edit.setText(str(config.roi_params.support_max_layer))
         self.support_max_growth_edit.setText(f"{(config.roi_params.support_max_growth - 1.0) * 100.0:.1f}")
 
-        # --- Morphological AA settings ---
-        self.z_correction_lut_editor.set_lut_params(config.z_correction_lut)
-
         # --- General Settings ---
         self.thread_count_edit.setText(str(config.thread_count))
         self.numba_checkbox.setChecked(config.use_numba_jit)
@@ -409,6 +395,7 @@ class ImageProcessorApp(QWidget):
         self.debug_checkbox.setChecked(config.debug_save)
         
         self.xy_blend_tab.apply_settings(config)
+        self.smaa_tab.load_settings()
 
     def save_settings(self):
         """Saves current UI settings to the global config object and QSettings."""
@@ -478,6 +465,8 @@ class ImageProcessorApp(QWidget):
         config.use_tiledb_backend = self.tiledb_checkbox.isChecked()
         config.debug_save = self.debug_checkbox.isChecked()
         
+        self.smaa_tab.save_settings()
+
         config.save("app_config.json")
 
     def _save_config_to_file(self):

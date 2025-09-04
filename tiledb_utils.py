@@ -19,11 +19,13 @@ import tiledb
 import numpy as np
 import os
 import cv2
+import shutil
 from typing import List, Tuple
 
 def create_dense_array_for_slices(uri: str, height: int, width: int, num_layers: int):
     """
     Creates a 3D dense TileDB array to store image slices.
+    This version is robust against pre-existing, invalid, or mismatched arrays.
 
     Args:
         uri (str): The URI for the TileDB array.
@@ -32,8 +34,16 @@ def create_dense_array_for_slices(uri: str, height: int, width: int, num_layers:
         num_layers (int): The number of layers (Z dimension).
     """
     if tiledb.object_type(uri) == "array":
-        print(f"Array already exists at '{uri}'. Re-using it.")
-        return
+        with tiledb.open(uri, 'r') as A:
+            if A.schema.domain.shape == (num_layers, height, width):
+                print(f"Array with matching shape already exists at '{uri}'. Re-using.")
+                return
+            else:
+                print(f"Array with conflicting shape found at '{uri}'. Removing and recreating.")
+                shutil.rmtree(uri)
+    elif os.path.exists(uri):
+        print(f"Non-array file/folder found at '{uri}'. Removing and recreating.")
+        shutil.rmtree(uri)
 
     print(f"Creating new TileDB array at '{uri}' with shape ({num_layers}, {height}, {width})")
 

@@ -134,13 +134,18 @@ class ProcessingPipelineThread(QThread):
             processing_output_path = ""
 
             if self.app_config.input_mode == "uvtools":
-                input_path = self._run_uvtools_extraction()
+                input_path = self._run_uvtools_extraction() # This already sets self.session_temp_folder
                 self.logger.log("UVTools extraction completed.")
                 processing_output_path = os.path.join(self.session_temp_folder, "Output")
-                os.makedirs(processing_output_path, exist_ok=True)
             else:
+                # For folder mode, create a session folder inside the output directory
+                self.session_temp_folder = os.path.join(self.app_config.output_folder, f"session_{self.run_timestamp}")
                 input_path = self.app_config.input_folder
                 processing_output_path = self.app_config.output_folder
+
+            os.makedirs(self.session_temp_folder, exist_ok=True)
+            if not os.path.isdir(processing_output_path):
+                 os.makedirs(processing_output_path, exist_ok=True)
 
             all_image_filenames = sorted(
                 [f for f in os.listdir(input_path) if f.lower().endswith(('.png', '.bmp', '.tif', '.tiff'))],
@@ -168,9 +173,14 @@ class ProcessingPipelineThread(QThread):
             if self.app_config.use_tiledb_backend:
                 self.status_update.emit("TileDB Backend Enabled: Ingesting images into array...")
                 self.logger.log("Starting TileDB ingestion.")
+
+                # Use a path inside the session folder for the main array
+                main_tiledb_uri = os.path.join(self.session_temp_folder, "main_slices_db")
+                self.app_config.tiledb_array_uri = main_tiledb_uri # Update config for other parts to use
+
                 try:
                     tiledb_utils.ingest_images_to_tiledb(
-                        self.app_config.tiledb_array_uri,
+                        main_tiledb_uri,
                         image_filenames_filtered,
                         input_path
                     )
@@ -320,10 +330,10 @@ class ProcessingPipelineThread(QThread):
             self.error_signal.emit(f"Could not open source TileDB array: {e}")
             return
 
-        # Define URIs for temporary arrays
-        temp_uri_xy = f"tiledb_temp_smaa_xy_{self.run_timestamp}"
-        temp_uri_xz = f"tiledb_temp_smaa_xz_{self.run_timestamp}"
-        temp_uri_yz = f"tiledb_temp_smaa_yz_{self.run_timestamp}"
+        # Define URIs for temporary arrays inside the session folder
+        temp_uri_xy = os.path.join(self.session_temp_folder, f"tiledb_temp_smaa_xy")
+        temp_uri_xz = os.path.join(self.session_temp_folder, f"tiledb_temp_smaa_xz")
+        temp_uri_yz = os.path.join(self.session_temp_folder, f"tiledb_temp_smaa_yz")
         temp_uris = [temp_uri_xy, temp_uri_xz, temp_uri_yz]
 
         try:
