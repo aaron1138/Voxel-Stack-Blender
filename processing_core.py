@@ -404,6 +404,181 @@ def _calculate_receding_gradient_field_enhanced_edt(current_white_mask, prior_bi
     return cv2.bitwise_and(final_gradient_map, final_gradient_map, mask=receding_white_areas)
 
 
+def _calculate_receding_gradient_field_enhanced_edt_scipy_v2(receding_distance_map, labels, num_labels, fade_distance_limit, distance_lut):
+    """
+    Calculates the Enhanced EDT gradient using the SciPy vectorized approach.
+    """
+    max_vals_per_label = ndimage.maximum(receding_distance_map, labels=labels, index=np.arange(1, num_labels))
+    max_vals_lut = np.concatenate(([0], max_vals_per_label))
+    max_map = max_vals_lut[labels]
+
+    denominator = np.minimum(max_map, fade_distance_limit)
+    denominator = denominator.astype(np.float32)
+    denominator[denominator <= 0] = 1.0
+
+    clipped_map = np.clip(receding_distance_map, 0, denominator)
+    normalized_map = clipped_map / denominator
+
+    # Vectorized LUT lookup
+    if distance_lut.shape[0] > 0:
+        lut_distances = distance_lut[:, 0]
+        lut_scales = distance_lut[:, 1]
+
+        # Find the index of the bucket each pixel's distance falls into
+        # 'side=right' finds the insertion point, subtracting 1 gives us the index of the bucket start
+        indices = np.searchsorted(lut_distances, receding_distance_map, side='right') - 1
+        indices = np.clip(indices, 0, len(lut_scales) - 1)
+
+        # Create a map of scale factors using the calculated indices
+        scale_map = lut_scales[indices]
+
+        # Apply the scaling
+        normalized_map = np.clip(normalized_map * scale_map, 0.0, 1.0)
+
+    inverted_map = 1.0 - normalized_map
+    final_gradient_map = (255 * inverted_map).astype(np.uint8)
+    return final_gradient_map
+
+@numba.jit(nopython=True, cache=True)
+def _lookup_distance_scale(dist, lut_array):
+    """
+    Finds the appropriate scale factor from a LUT for a given distance.
+    The LUT is an array of [distance, scale] pairs, sorted by distance.
+    """
+    if len(lut_array) == 0:
+        return 1.0
+
+    # If dist is smaller than the first distance entry, we have a choice:
+    # either use the first scale, or 1.0. Let's use the first scale.
+    if dist < lut_array[0, 0]:
+        return lut_array[0, 1]
+
+    # Iterate through the lut to find the right bucket
+    for i in range(len(lut_array) - 1):
+        # If dist is between the current and next distance markers
+        if lut_array[i, 0] <= dist < lut_array[i+1, 0]:
+            return lut_array[i, 1] # Use the scale of the bucket's start
+
+    # If we're past the last-but-one entry, it means the distance is in the last bucket.
+    return lut_array[-1, 1]
+
+@numba.jit(nopython=True, cache=True)
+def _calculate_receding_gradient_field_enhanced_edt_numba_v2(receding_distance_map, labels, num_labels, fade_distance_limit, distance_lut):
+    """
+    Calculates the Enhanced EDT gradient using a Numba JIT-compiled loop for performance.
+    """
+    final_gradient_map = np.zeros_like(receding_distance_map, dtype=np.uint8)
+
+    # First pass: find max distance for each label
+    max_vals = np.zeros(num_labels, dtype=np.float32)
+    for y in range(labels.shape[0]):
+        for x in range(labels.shape[1]):
+            label = labels[y, x]
+            if label > 0:
+                dist = receding_distance_map[y, x]
+                if dist > max_vals[label]:
+                    max_vals[label] = dist
+
+    # Second pass: calculate final gradient
+    for y in range(labels.shape[0]):
+        for x in range(labels.shape[1]):
+            label = labels[y, x]
+            if label > 0:
+                dist = receding_distance_map[y, x]
+
+                denominator = min(max_vals[label], fade_distance_limit)
+                if denominator > 0:
+                    clipped_dist = min(dist, denominator)
+                    normalized = clipped_dist / denominator
+
+                    # Apply distance-based LUT scaling
+                    scale_factor = _lookup_distance_scale(dist, distance_lut)
+                    normalized = np.clip(normalized * scale_factor, 0.0, 1.0)
+
+                    inverted = 1.0 - normalized
+                    final_gradient_map[y, x] = int(inverted * 255)
+
+    return final_gradient_map
+
+def _calculate_receding_gradient_field_enhanced_edt_v2(current_white_mask, prior_binary_masks, config, debug_info=None):
+    """
+    Dispatcher for Enhanced EDT V2. Sets up common data then calls either the
+    SciPy or Numba implementation based on the user's config.
+    """
+    if not prior_binary_masks:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    prior_white_combined_mask = find_prior_combined_white_mask(prior_binary_masks)
+    if prior_white_combined_mask is None:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    receding_white_areas = cv2.bitwise_and(prior_white_combined_mask, cv2.bitwise_not(current_white_mask))
+    if cv2.countNonZero(receding_white_areas) == 0:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    distance_transform_src = cv2.bitwise_not(current_white_mask)
+
+    # --- Anisotropic Correction ---
+    if config.anisotropic_params.enabled:
+        ap = config.anisotropic_params
+        original_height, original_width = distance_transform_src.shape
+
+        # Clamp factors to prevent excessive scaling
+        x_factor = max(0.1, min(10.0, ap.x_factor))
+        y_factor = max(0.1, min(10.0, ap.y_factor))
+
+        # Only resize if factors are not 1.0 to avoid unnecessary work
+        if x_factor != 1.0 or y_factor != 1.0:
+            new_width = int(original_width * x_factor)
+            new_height = int(original_height * y_factor)
+
+            # Resize the source mask, calculate distance, then resize back
+            resized_src = cv2.resize(distance_transform_src, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
+            resized_dist_map = cv2.distanceTransform(resized_src, cv2.DIST_L2, 5)
+
+            # Resize the distance map back to original dimensions
+            distance_map = cv2.resize(resized_dist_map, (original_width, original_height), interpolation=cv2.INTER_LINEAR)
+        else:
+            distance_map = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5)
+    else:
+        distance_map = cv2.distanceTransform(distance_transform_src, cv2.DIST_L2, 5)
+
+    receding_distance_map = cv2.bitwise_and(distance_map, distance_map, mask=receding_white_areas)
+
+    num_labels, labels = cv2.connectedComponents(receding_white_areas)
+    if num_labels <= 1:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    fade_distance_limit = config.fixed_fade_distance_receding
+
+    # Convert LUT list of dataclasses to a NumPy array for Numba
+    distance_lut_data = config.edt_v2_distance_lut
+    if distance_lut_data:
+        # Sort by distance to ensure it's correct for the lookup function
+        distance_lut_data.sort(key=lambda p: p.distance)
+        distance_lut_array = np.array([[p.distance, p.scale] for p in distance_lut_data], dtype=np.float32)
+    else:
+        distance_lut_array = np.empty((0, 2), dtype=np.float32)
+
+
+    if config.use_numba_jit:
+        try:
+            final_gradient_map = _calculate_receding_gradient_field_enhanced_edt_numba_v2(
+                receding_distance_map, labels.astype(np.int32), num_labels, fade_distance_limit, distance_lut_array
+            )
+        except Exception as e:
+            print(f"Numba JIT execution failed: {e}. Falling back to SciPy implementation.")
+            final_gradient_map = _calculate_receding_gradient_field_enhanced_edt_scipy_v2(
+                receding_distance_map, labels, num_labels, fade_distance_limit, distance_lut_array
+            )
+    else:
+        final_gradient_map = _calculate_receding_gradient_field_enhanced_edt_scipy_v2(
+            receding_distance_map, labels, num_labels, fade_distance_limit, distance_lut_array
+        )
+
+    return cv2.bitwise_and(final_gradient_map, final_gradient_map, mask=receding_white_areas)
+
+
 def process_z_blending(current_white_mask, prior_masks, config, classified_rois, debug_info=None):
     """
     Main entry point for Z-axis blending. Dispatches to the correct blending mode.
@@ -426,6 +601,13 @@ def process_z_blending(current_white_mask, prior_masks, config, classified_rois,
         )
     elif config.blending_mode == ProcessingMode.ENHANCED_EDT:
         return _calculate_receding_gradient_field_enhanced_edt(
+            current_white_mask,
+            prior_masks,
+            config,
+            debug_info
+        )
+    elif config.blending_mode == ProcessingMode.ENHANCED_EDT_V2:
+        return _calculate_receding_gradient_field_enhanced_edt_v2(
             current_white_mask,
             prior_masks,
             config,
