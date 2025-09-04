@@ -3,18 +3,19 @@ import shutil
 from config import Config, ProcessingMode
 from processing_pipeline import ProcessingPipelineThread
 
-def run_test(use_tiledb):
-    print(f"--- Running test with TileDB {'enabled' if use_tiledb else 'disabled'} ---")
+def run_test(use_tiledb, mode, output_suffix):
+    print(f"--- Running test with TileDB {'enabled' if use_tiledb else 'disabled'}, mode: {mode.value} ---")
 
     # --- Setup Config ---
     config = Config()
     config.input_folder = "test_images"
-    config.output_folder = f"output_images_{'tiledb' if use_tiledb else 'default'}"
+    config.output_folder = f"output_images_{output_suffix}"
     config.use_tiledb = use_tiledb
-    config.blending_mode = ProcessingMode.ENHANCED_EDT
+    config.blending_mode = mode
     config.receding_layers = 4
     config.fixed_fade_distance_receding = 10.0
     config.use_numba_jit = True # Use Numba for the default pipeline
+    config.roi_params.min_size = 10 # Lower for test images
 
     if os.path.exists(config.output_folder):
         shutil.rmtree(config.output_folder)
@@ -35,12 +36,14 @@ def run_test(use_tiledb):
     print(f"--- Test finished ---")
 
 if __name__ == "__main__":
-    # Run with default pipeline
-    run_test(use_tiledb=False)
+    # Test ENHANCED_EDT mode
+    run_test(use_tiledb=False, mode=ProcessingMode.ENHANCED_EDT, output_suffix="default_edt")
+    run_test(use_tiledb=True, mode=ProcessingMode.ENHANCED_EDT, output_suffix="tiledb_edt")
 
-    # Run with TileDB pipeline
-    run_test(use_tiledb=True)
+    # Test ROI_FADE mode
+    run_test(use_tiledb=False, mode=ProcessingMode.ROI_FADE, output_suffix="default_roi")
+    run_test(use_tiledb=True, mode=ProcessingMode.ROI_FADE, output_suffix="tiledb_roi")
 
     print("\n--- Verification ---")
-    print("Check the 'output_images_default' and 'output_images_tiledb' directories.")
-    print("The output images should be visually similar.")
+    print("Check the output directories. The edt outputs should be different from the roi outputs.")
+    print("The default and tiledb outputs for each mode should be visually similar.")
