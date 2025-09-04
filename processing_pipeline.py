@@ -15,9 +15,12 @@ from config import Config, XYBlendOperation, ProcessingMode
 import processing_core as core
 import xy_blend_processor
 from roi_tracker import ROITracker
+import tiledb
 import uvtools_wrapper
 from logger import Logger
 import tiledb_utils
+import smaa_engine
+import lut_manager
 
 class ProcessingPipelineThread(QThread):
     """
@@ -180,6 +183,10 @@ class ProcessingPipelineThread(QThread):
                     self.error_signal.emit(error_info)
                     return
 
+            if self.app_config.blending_mode == ProcessingMode.MORPHOLOGICAL_AA:
+                self._run_smaa_pipeline(image_filenames_filtered, processing_output_path)
+                return # SMAA pipeline is self-contained
+
             prior_binary_masks_cache = collections.deque(maxlen=self.app_config.receding_layers)
             tracker = ROITracker()
 
@@ -293,6 +300,118 @@ class ProcessingPipelineThread(QThread):
 
             self.logger.log_total_time()
             self.finished_signal.emit()
+
+    def _run_smaa_pipeline(self, image_filenames: List[str], output_folder: str):
+        """
+        Executes the separable morphological anti-aliasing (SMAA) pipeline.
+        """
+        if not self.app_config.use_tiledb_backend:
+            self.error_signal.emit("Morphological AA requires the TileDB Backend to be enabled.")
+            return
+
+        self.status_update.emit("Starting Morphological AA pipeline...")
+        self.logger.log("SMAA Pipeline Started.")
+
+        # Get image dimensions from the source array
+        try:
+            with tiledb.open(self.app_config.tiledb_array_uri, 'r') as A:
+                num_layers, height, width = A.shape
+        except Exception as e:
+            self.error_signal.emit(f"Could not open source TileDB array: {e}")
+            return
+
+        # Define URIs for temporary arrays
+        temp_uri_xy = f"tiledb_temp_smaa_xy_{self.run_timestamp}"
+        temp_uri_xz = f"tiledb_temp_smaa_xz_{self.run_timestamp}"
+        temp_uri_yz = f"tiledb_temp_smaa_yz_{self.run_timestamp}"
+        temp_uris = [temp_uri_xy, temp_uri_xz, temp_uri_yz]
+
+        try:
+            # --- Pass 1: XY Plane ---
+            self.status_update.emit("SMAA: Processing XY planes (1/4)...")
+            tiledb_utils.create_dense_array_for_slices(temp_uri_xy, height, width, num_layers)
+            with tiledb.open(self.app_config.tiledb_array_uri, 'r') as A_in, tiledb.open(temp_uri_xy, 'w') as A_out:
+                for i in range(num_layers):
+                    if not self._is_running: break
+                    self.progress_update.emit(int((i / num_layers) * 25))
+                    img_slice = A_in[i, :, :]['pixel_value']
+                    smaa_slice = smaa_engine.apply_smaa(img_slice)
+                    A_out[i, :, :] = smaa_slice
+            if not self._is_running: return
+
+            # --- Pass 2: XZ Plane ---
+            self.status_update.emit("SMAA: Processing XZ planes (2/4)...")
+            tiledb_utils.create_dense_array_for_slices(temp_uri_xz, num_layers, width, height) # Y becomes the 'num_layers' dim
+            z_lut = lut_manager.get_lut_from_params(self.app_config.z_correction_lut)
+            with tiledb.open(self.app_config.tiledb_array_uri, 'r') as A_in, tiledb.open(temp_uri_xz, 'w') as A_out:
+                for i in range(height): # Iterate over Y dimension
+                    if not self._is_running: break
+                    self.progress_update.emit(int(25 + (i / height) * 25))
+                    img_slice = A_in[:, i, :]['pixel_value'] # This is an XZ slice
+                    smaa_slice = smaa_engine.apply_smaa(img_slice)
+                    A_out[i, :, :] = z_lut[smaa_slice]
+            if not self._is_running: return
+
+            # --- Pass 3: YZ Plane ---
+            self.status_update.emit("SMAA: Processing YZ planes (3/4)...")
+            # The shape is (width, num_layers, height) because we iterate over X
+            # and each slice is a ZY plane.
+            tiledb_utils.create_dense_array_for_slices(temp_uri_yz, num_layers, height, width)
+            with tiledb.open(self.app_config.tiledb_array_uri, 'r') as A_in, tiledb.open(temp_uri_yz, 'w') as A_out:
+                for i in range(width): # Iterate over X dimension
+                    if not self._is_running: break
+                    self.progress_update.emit(int(50 + (i / width) * 25))
+                    img_slice = A_in[:, :, i]['pixel_value'] # This is a YZ slice, shape (num_layers, height)
+                    smaa_slice = smaa_engine.apply_smaa(img_slice)
+                    A_out[i, :, :] = z_lut[smaa_slice]
+            if not self._is_running: return
+
+            # --- Pass 4: Final Blending ---
+            self.status_update.emit("SMAA: Blending results (4/4)...")
+            with tiledb.open(temp_uri_xy, 'r') as A_xy, \
+                 tiledb.open(temp_uri_xz, 'r') as A_xz, \
+                 tiledb.open(temp_uri_yz, 'r') as A_yz:
+
+                for i in range(num_layers):
+                    if not self._is_running: break
+                    self.progress_update.emit(int(75 + (i / num_layers) * 25))
+
+                    # Read components for slice 'i'
+                    xy_comp = A_xy[i, :, :]['pixel_value'] # Shape (height, width)
+
+                    # Reconstruct from XZ and YZ passes
+                    # A_xz is (y, z, x) -> A_xz[:, i, :] gives a slice over Y and X at Z=i -> shape (height, width)
+                    xz_comp = A_xz[:, i, :]['pixel_value']
+
+                    # A_yz is (x, z, y) -> A_yz[:, i, :] gives a slice over X and Y at Z=i -> shape (width, height)
+                    yz_comp_raw = A_yz[:, i, :]['pixel_value']
+                    yz_comp = yz_comp_raw.T # Transpose from (width, height) to (height, width)
+
+                    # Blend by taking the minimum (darkest) value
+                    final_image = np.minimum(xy_comp, xz_comp)
+                    final_image = np.minimum(final_image, yz_comp)
+
+                    # Apply XY pipeline post-processing
+                    final_image = xy_blend_processor.process_xy_pipeline(final_image, self.app_config.xy_blend_pipeline)
+
+                    # Save the final image
+                    output_filename = os.path.basename(image_filenames[i])
+                    output_filepath = os.path.join(output_folder, output_filename)
+                    cv2.imwrite(output_filepath, final_image)
+
+            self.progress_update.emit(100)
+
+        finally:
+            # --- Cleanup ---
+            self.status_update.emit("SMAA: Cleaning up temporary arrays...")
+            for uri in temp_uris:
+                try:
+                    if tiledb.object_type(uri) == "array":
+                        tiledb.remove(uri)
+                except Exception as e:
+                    self.logger.log(f"Warning: Could not remove temp array {uri}: {e}")
+            self.logger.log("SMAA Pipeline Finished.")
+
 
     def stop_processing(self):
         self._is_running = False

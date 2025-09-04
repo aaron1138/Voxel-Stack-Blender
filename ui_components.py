@@ -35,6 +35,7 @@ from config import (
 )
 from pyside_xy_blend_tab import XYBlendTab
 from processing_pipeline import ProcessingPipelineThread
+from lut_editor_widget import LutEditorWidget
 
 class ImageProcessorApp(QWidget):
     """The main application window, now with a restructured UI."""
@@ -158,6 +159,7 @@ class ImageProcessorApp(QWidget):
         self.blending_mode_combo.addItem("Enhanced EDT", ProcessingMode.ENHANCED_EDT)
         self.blending_mode_combo.addItem("Fixed Fade", ProcessingMode.FIXED_FADE)
         self.blending_mode_combo.addItem("ROI Mode (Slow)", ProcessingMode.ROI_FADE)
+        self.blending_mode_combo.addItem("Morphological AA", ProcessingMode.MORPHOLOGICAL_AA)
         blending_mode_layout.addWidget(self.blending_mode_combo)
         blending_mode_layout.addStretch(1)
         blending_layout.addLayout(blending_mode_layout)
@@ -244,6 +246,18 @@ class ImageProcessorApp(QWidget):
 
         blending_layout.addWidget(self.roi_settings_group)
 
+        self.smaa_settings_group = QGroupBox("Morphological AA Settings")
+        self.smaa_settings_group.setVisible(False) # Hidden by default
+        smaa_layout = QVBoxLayout(self.smaa_settings_group)
+        smaa_info_label = QLabel("<i>Note: This mode requires the TileDB Backend to be enabled. It performs anti-aliasing on XY, XZ, and YZ planes.</i>")
+        smaa_info_label.setWordWrap(True)
+        smaa_layout.addWidget(smaa_info_label)
+
+        self.z_correction_lut_editor = LutEditorWidget(self)
+        smaa_layout.addWidget(self.z_correction_lut_editor)
+
+        blending_layout.addWidget(self.smaa_settings_group)
+
         main_processing_layout.addWidget(blending_group)
         
         general_group = QGroupBox("General")
@@ -306,6 +320,7 @@ class ImageProcessorApp(QWidget):
         self.save_config_button.clicked.connect(self._save_config_to_file)
         self.load_config_button.clicked.connect(self._load_config_from_file)
         self.start_stop_button.clicked.connect(self.toggle_processing)
+        self.z_correction_lut_editor.lut_params_changed.connect(self._save_z_correction_lut_params)
 
     def _autodetect_uvtools(self):
         """Checks for UVTools in the default location and populates the path if found."""
@@ -317,14 +332,19 @@ class ImageProcessorApp(QWidget):
     def on_input_mode_changed(self, stack_index):
         self.io_stacked_widget.setCurrentIndex(stack_index)
 
+    def _save_z_correction_lut_params(self):
+        # This method is called whenever the LUT editor's params change.
+        # We can just update the config object directly.
+        config.z_correction_lut = self.z_correction_lut_editor._lut_params
+
     def on_blending_mode_changed(self, index):
         selected_mode = self.blending_mode_combo.itemData(index)
 
         # Show/hide ROI settings
-        if selected_mode == ProcessingMode.ROI_FADE:
-            self.roi_settings_group.setVisible(True)
-        else:
-            self.roi_settings_group.setVisible(False)
+        self.roi_settings_group.setVisible(selected_mode == ProcessingMode.ROI_FADE)
+
+        # Show/hide SMAA settings
+        self.smaa_settings_group.setVisible(selected_mode == ProcessingMode.MORPHOLOGICAL_AA)
 
         # Update fade distance label text
         if selected_mode == ProcessingMode.ENHANCED_EDT:
@@ -378,6 +398,9 @@ class ImageProcessorApp(QWidget):
         self.support_max_size_edit.setText(str(config.roi_params.support_max_size))
         self.support_max_layer_edit.setText(str(config.roi_params.support_max_layer))
         self.support_max_growth_edit.setText(f"{(config.roi_params.support_max_growth - 1.0) * 100.0:.1f}")
+
+        # --- Morphological AA settings ---
+        self.z_correction_lut_editor.set_lut_params(config.z_correction_lut)
 
         # --- General Settings ---
         self.thread_count_edit.setText(str(config.thread_count))

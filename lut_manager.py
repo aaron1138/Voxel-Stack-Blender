@@ -167,3 +167,30 @@ def generate_spline_lut(control_points: List[List[int]], input_min: int, input_m
 
     # The curve function is now our spline
     return _generate_curve_in_range(spline, input_min, input_max, output_min, output_max)
+
+def get_lut_from_params(lut_params) -> Optional[np.ndarray]:
+    """
+    A helper function to generate a LUT numpy array from a LutParameters object.
+    This logic is replicated from LutEditorWidget._get_lut_from_params.
+    """
+    # This is a bit of a circular dependency, so we import here to avoid issues.
+    from config import LutParameters
+    if not lut_params: return None
+    try:
+        if lut_params.lut_source == "generated":
+            args = (lut_params.input_min, lut_params.input_max, lut_params.output_min, lut_params.output_max)
+            if lut_params.lut_generation_type == "spline": return generate_spline_lut(lut_params.spline_points, *args)
+            if lut_params.lut_generation_type == "linear": return generate_linear_lut(*args)
+            if lut_params.lut_generation_type == "gamma": return generate_gamma_lut(lut_params.gamma_value, *args)
+            if lut_params.lut_generation_type == "s_curve": return generate_s_curve_lut(lut_params.s_curve_contrast, *args)
+            if lut_params.lut_generation_type == "log": return generate_log_lut(lut_params.log_param, *args)
+            if lut_params.lut_generation_type == "exp": return generate_exp_lut(lut_params.exp_param, *args)
+            if lut_params.lut_generation_type == "sqrt": return generate_sqrt_lut(lut_params.sqrt_param, *args)
+            if lut_params.lut_generation_type == "rodbard": return generate_rodbard_lut(lut_params.rodbard_param, *args)
+        elif lut_params.lut_source == "file" and lut_params.fixed_lut_path and os.path.exists(lut_params.fixed_lut_path):
+            return load_lut(lut_params.fixed_lut_path)
+    except Exception as e:
+        print(f"Error generating LUT from params: {e}")
+
+    # Fallback to a default linear LUT if anything fails
+    return get_default_z_lut()

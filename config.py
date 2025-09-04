@@ -32,6 +32,7 @@ class ProcessingMode(Enum):
     FIXED_FADE = "fixed_fade"
     ROI_FADE = "roi_fade"
     WEIGHTED_STACK = "weighted_stack"
+    MORPHOLOGICAL_AA = "morphological_aa"
 
 
 class WeightingFalloff(Enum):
@@ -83,6 +84,13 @@ class LutParameters:
         self.sqrt_param = max(0.1, min(50.0, self.sqrt_param))
         self.rodbard_param = max(0.0, min(2.0, self.rodbard_param))
 
+    @classmethod
+    def from_dict(cls, data: dict) -> "LutParameters":
+        """Creates a LutParameters object from a dictionary."""
+        lut_field_names = {f.name for f in fields(cls)}
+        filtered_lut_data = {k: v for k, v in data.items() if k in lut_field_names}
+        return cls(**filtered_lut_data)
+
 @dataclass
 class XYBlendOperation:
     """
@@ -122,17 +130,11 @@ class XYBlendOperation:
             if self.resize_width == 0: self.resize_width = None
             if self.resize_height == 0: self.resize_height = None
         if isinstance(self.lut_params, dict):
-            self.lut_params = self.from_dict_to_lut_params(self.lut_params)
+            self.lut_params = LutParameters.from_dict(self.lut_params)
 
     def _ensure_odd_positive_ksize(self, ksize: int) -> int:
         if ksize <= 0: return 1
         return ksize if ksize % 2 != 0 else ksize + 1
-        
-    @staticmethod
-    def from_dict_to_lut_params(data: dict) -> LutParameters:
-        lut_field_names = {f.name for f in fields(LutParameters)}
-        filtered_lut_data = {k: v for k, v in data.items() if k in lut_field_names}
-        return LutParameters(**filtered_lut_data)
 
 @dataclass
 class RoiParameters:
@@ -157,6 +159,11 @@ class AnisotropicParams:
     x_factor: float = 1.0
     y_factor: float = 1.0
 
+@dataclass
+class SmaaParameters:
+    """Parameters for Morphological Anti-Aliasing."""
+    # For now, this is a placeholder for future tuning knobs.
+    placeholder: bool = True
 
 @dataclass
 class Config:
@@ -197,6 +204,10 @@ class Config:
 
     # --- ROI Mode Settings ---
     roi_params: RoiParameters = field(default_factory=RoiParameters)
+
+    # --- Morphological AA Settings ---
+    smaa_params: SmaaParameters = field(default_factory=SmaaParameters)
+    z_correction_lut: LutParameters = field(default_factory=LutParameters)
 
     # --- General Settings ---
     thread_count: int = DEFAULT_NUM_WORKERS
@@ -246,7 +257,7 @@ class Config:
                             op_field_names = {f.name for f in fields(XYBlendOperation)}
                             filtered_op_data = {k: v for k, v in op_data.items() if k in op_field_names}
                             if 'lut_params' in filtered_op_data and isinstance(filtered_op_data['lut_params'], dict):
-                                filtered_op_data['lut_params'] = XYBlendOperation.from_dict_to_lut_params(filtered_op_data['lut_params'])
+                                filtered_op_data['lut_params'] = LutParameters.from_dict(filtered_op_data['lut_params'])
                             pipeline_list.append(XYBlendOperation(**filtered_op_data))
                     setattr(config_instance, key, pipeline_list)
                 elif key == 'roi_params':
@@ -259,6 +270,14 @@ class Config:
                         anisotropic_field_names = {f.name for f in fields(AnisotropicParams)}
                         filtered_anisotropic_data = {k: v for k, v in value.items() if k in anisotropic_field_names}
                         setattr(config_instance, key, AnisotropicParams(**filtered_anisotropic_data))
+                elif key == 'smaa_params':
+                    if isinstance(value, dict):
+                        smaa_field_names = {f.name for f in fields(SmaaParameters)}
+                        filtered_smaa_data = {k: v for k, v in value.items() if k in smaa_field_names}
+                        setattr(config_instance, key, SmaaParameters(**filtered_smaa_data))
+                elif key == 'z_correction_lut':
+                    if isinstance(value, dict):
+                        setattr(config_instance, key, LutParameters.from_dict(value))
                 else:
                     if field_obj.type is bool and isinstance(value, str):
                         value = value.lower() in ('true', '1', 't', 'y')
