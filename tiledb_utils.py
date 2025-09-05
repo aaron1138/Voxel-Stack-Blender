@@ -47,10 +47,11 @@ def create_dense_array_for_slices(uri: str, height: int, width: int, num_layers:
 
     print(f"Creating new TileDB array at '{uri}' with shape ({num_layers}, {height}, {width})")
 
+    # Use a dimensionally-optimized tile layout for balanced performance
     dom = tiledb.Domain(
-        tiledb.Dim(name="Z", domain=(0, num_layers - 1), tile=1, dtype=np.uint32),
-        tiledb.Dim(name="Y", domain=(0, height - 1), tile=height, dtype=np.uint32),
-        tiledb.Dim(name="X", domain=(0, width - 1), tile=width, dtype=np.uint32),
+        tiledb.Dim(name="Z", domain=(0, num_layers - 1), tile=min(16, num_layers), dtype=np.uint32),
+        tiledb.Dim(name="Y", domain=(0, height - 1), tile=min(256, height), dtype=np.uint32),
+        tiledb.Dim(name="X", domain=(0, width - 1), tile=min(256, width), dtype=np.uint32),
     )
 
     schema = tiledb.ArraySchema(
@@ -63,14 +64,15 @@ def create_dense_array_for_slices(uri: str, height: int, width: int, num_layers:
 
     tiledb.Array.create(uri, schema)
 
-def ingest_images_to_tiledb(uri: str, image_files: List[str], input_path: str):
+def ingest_images_to_tiledb(uri: str, image_files: List[str], input_path: str, batch_size=32):
     """
-    Ingests a list of image files into a TileDB array.
+    Ingests a list of image files into a TileDB array using batching for performance.
 
     Args:
         uri (str): The URI of the TileDB array.
         image_files (List[str]): A sorted list of image filenames.
         input_path (str): The path to the directory containing the images.
+        batch_size (int): The number of images to read and write per chunk.
     """
     if not image_files:
         raise ValueError("Image file list cannot be empty.")
@@ -86,11 +88,23 @@ def ingest_images_to_tiledb(uri: str, image_files: List[str], input_path: str):
     create_dense_array_for_slices(uri, height, width, num_layers)
 
     with tiledb.open(uri, 'w') as A:
-        for i, filename in enumerate(image_files):
-            filepath = os.path.join(input_path, filename)
-            img_data = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
-            if img_data is not None:
-                A[i, :, :] = img_data
+        for i in range(0, num_layers, batch_size):
+            batch_filenames = image_files[i:i+batch_size]
+            actual_batch_size = len(batch_filenames)
+
+            # Pre-allocate numpy array for the batch
+            batch_data = np.zeros((actual_batch_size, height, width), dtype=np.uint8)
+
+            # Read images into the batch array
+            for j, filename in enumerate(batch_filenames):
+                filepath = os.path.join(input_path, filename)
+                img_data = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
+                if img_data is not None:
+                    batch_data[j, :, :] = img_data
+
+            # Write the entire batch to TileDB
+            print(f"Writing batch of {actual_batch_size} images to slice {i}...")
+            A[i:i+actual_batch_size, :, :] = batch_data
 
 def read_xy_slice(uri: str, slice_index: int) -> Tuple[np.ndarray, np.ndarray]:
     """

@@ -364,16 +364,24 @@ class ProcessingPipelineThread(QThread):
 
             # --- Pass 3: YZ Plane ---
             self.status_update.emit("SMAA: Processing YZ planes (3/4)...")
-            # The shape is (width, num_layers, height) because we iterate over X
-            # and each slice is a ZY plane.
-            tiledb_utils.create_dense_array_for_slices(temp_uri_yz, num_layers, height, width)
+            # For the YZ pass, we iterate over X, and each slice is a ZY plane.
+            # The domain must be (X, Z, Y) to match the write pattern A_out[i, :, :].
+            if tiledb.object_type(temp_uri_yz) != "array":
+                yz_dom = tiledb.Domain(
+                    tiledb.Dim(name="X", domain=(0, width - 1), tile=min(256, width), dtype=np.uint32),
+                    tiledb.Dim(name="Z", domain=(0, num_layers - 1), tile=min(16, num_layers), dtype=np.uint32),
+                    tiledb.Dim(name="Y", domain=(0, height - 1), tile=min(256, height), dtype=np.uint32),
+                )
+                yz_schema = tiledb.ArraySchema(domain=yz_dom, sparse=False, attrs=[tiledb.Attr(name="pixel_value", dtype=np.uint8)])
+                tiledb.Array.create(temp_uri_yz, yz_schema)
+
             with tiledb.open(self.app_config.tiledb_array_uri, 'r') as A_in, tiledb.open(temp_uri_yz, 'w') as A_out:
                 for i in range(width): # Iterate over X dimension
                     if not self._is_running: break
                     self.progress_update.emit(int(50 + (i / width) * 25))
                     img_slice = A_in[:, :, i]['pixel_value'] # This is a YZ slice, shape (num_layers, height)
                     smaa_slice = smaa_engine.apply_smaa(img_slice)
-                    A_out[i, :, :] = z_lut[smaa_slice]
+                    A_out[i, :, :] = z_lut[smaa_slice] # Write the (Z,Y) slice at index X=i
             if not self._is_running: return
 
             # --- Pass 4: Final Blending ---
