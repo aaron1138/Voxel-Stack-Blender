@@ -41,15 +41,14 @@ class ProcessingPipelineThread(QThread):
         self.run_timestamp = self.logger.run_timestamp # Sync timestamps
         self.session_temp_folder = ""
 
-    def _run_uvtools_extraction(self) -> str:
+    def _run_uvtools_extraction(self, session_folder: str) -> str:
         self.status_update.emit("Starting UVTools slice extraction...")
         self.logger.log("Starting UVTools slice extraction.")
-        self.session_temp_folder = os.path.join(self.app_config.uvtools_temp_folder, f"{self.app_config.output_file_prefix}{self.run_timestamp}")
 
         input_folder = uvtools_wrapper.extract_layers(
             self.app_config.uvtools_path,
             self.app_config.uvtools_input_file,
-            self.session_temp_folder
+            session_folder
         )
         self.status_update.emit("UVTools extraction completed.")
         return input_folder
@@ -133,17 +132,22 @@ class ProcessingPipelineThread(QThread):
             input_path = ""
             processing_output_path = ""
 
+            # Set up a single, consistent session folder in the hardcoded temp directory
+            base_temp_dir = os.path.join("c:", "temp", "vsbtiledb")
+            self.session_temp_folder = os.path.join(base_temp_dir, f"session_{self.run_timestamp}")
+            os.makedirs(self.session_temp_folder, exist_ok=True)
+            self.logger.log(f"Session folder created at: {self.session_temp_folder}")
+
             if self.app_config.input_mode == "uvtools":
-                input_path = self._run_uvtools_extraction() # This already sets self.session_temp_folder
+                input_path = self._run_uvtools_extraction(self.session_temp_folder)
                 self.logger.log("UVTools extraction completed.")
-                processing_output_path = os.path.join(self.session_temp_folder, "Output")
-            else:
-                # For folder mode, create a session folder inside the output directory
-                self.session_temp_folder = os.path.join(self.app_config.output_folder, f"session_{self.run_timestamp}")
+                # Output for processed PNGs also goes inside the session folder
+                processing_output_path = os.path.join(self.session_temp_folder, "Output_Processed")
+            else: # Folder mode
                 input_path = self.app_config.input_folder
                 processing_output_path = self.app_config.output_folder
 
-            os.makedirs(self.session_temp_folder, exist_ok=True)
+            # Ensure the final output directory exists, especially for folder mode.
             if not os.path.isdir(processing_output_path):
                  os.makedirs(processing_output_path, exist_ok=True)
 
@@ -339,49 +343,64 @@ class ProcessingPipelineThread(QThread):
         try:
             # --- Pass 1: XY Plane ---
             self.status_update.emit("SMAA: Processing XY planes (1/4)...")
-            tiledb_utils.create_dense_array_for_slices(temp_uri_xy, height, width, num_layers)
+            tiledb_utils.create_sparse_array_for_slices(temp_uri_xy, height, width, num_layers)
             with tiledb.open(self.app_config.tiledb_array_uri, 'r') as A_in, tiledb.open(temp_uri_xy, 'w') as A_out:
                 for i in range(num_layers):
                     if not self._is_running: break
                     self.progress_update.emit(int((i / num_layers) * 25))
-                    img_slice = A_in[i, :, :]['pixel_value']
+                    _, img_slice = tiledb_utils.read_xy_slice(self.app_config.tiledb_array_uri, i)
                     smaa_slice = smaa_engine.apply_smaa(img_slice)
-                    A_out[i, :, :] = smaa_slice
+
+                    # Write sparse result
+                    coords_y, coords_x = np.where(smaa_slice > 0)
+                    if coords_y.size > 0:
+                        coords_z = np.full_like(coords_y, i)
+                        A_out[coords_z, coords_y, coords_x] = smaa_slice[coords_y, coords_x]
             if not self._is_running: return
 
             # --- Pass 2: XZ Plane ---
             self.status_update.emit("SMAA: Processing XZ planes (2/4)...")
-            tiledb_utils.create_dense_array_for_slices(temp_uri_xz, num_layers, width, height) # Y becomes the 'num_layers' dim
+            tiledb_utils.create_sparse_array_for_slices(temp_uri_xz, num_layers, width, height) # Y becomes the 'num_layers' dim
             z_lut = lut_manager.get_lut_from_params(self.app_config.z_correction_lut)
             with tiledb.open(self.app_config.tiledb_array_uri, 'r') as A_in, tiledb.open(temp_uri_xz, 'w') as A_out:
                 for i in range(height): # Iterate over Y dimension
                     if not self._is_running: break
                     self.progress_update.emit(int(25 + (i / height) * 25))
-                    img_slice = A_in[:, i, :]['pixel_value'] # This is an XZ slice
+                    img_slice = tiledb_utils.read_xz_slice(self.app_config.tiledb_array_uri, i)
                     smaa_slice = smaa_engine.apply_smaa(img_slice)
-                    A_out[i, :, :] = z_lut[smaa_slice]
+                    smaa_slice_lut = z_lut[smaa_slice]
+
+                    # Write sparse result
+                    coords_z, coords_x = np.where(smaa_slice_lut > 0)
+                    if coords_z.size > 0:
+                        coords_y = np.full_like(coords_z, i)
+                        A_out[coords_y, coords_z, coords_x] = smaa_slice_lut[coords_z, coords_x]
             if not self._is_running: return
 
             # --- Pass 3: YZ Plane ---
             self.status_update.emit("SMAA: Processing YZ planes (3/4)...")
-            # For the YZ pass, we iterate over X, and each slice is a ZY plane.
-            # The domain must be (X, Z, Y) to match the write pattern A_out[i, :, :].
             if tiledb.object_type(temp_uri_yz) != "array":
                 yz_dom = tiledb.Domain(
                     tiledb.Dim(name="X", domain=(0, width - 1), tile=min(256, width), dtype=np.uint32),
                     tiledb.Dim(name="Z", domain=(0, num_layers - 1), tile=min(16, num_layers), dtype=np.uint32),
                     tiledb.Dim(name="Y", domain=(0, height - 1), tile=min(256, height), dtype=np.uint32),
                 )
-                yz_schema = tiledb.ArraySchema(domain=yz_dom, sparse=False, attrs=[tiledb.Attr(name="pixel_value", dtype=np.uint8)])
+                yz_schema = tiledb.ArraySchema(domain=yz_dom, sparse=True, attrs=[tiledb.Attr(name="pixel_value", dtype=np.uint8)])
                 tiledb.Array.create(temp_uri_yz, yz_schema)
 
             with tiledb.open(self.app_config.tiledb_array_uri, 'r') as A_in, tiledb.open(temp_uri_yz, 'w') as A_out:
                 for i in range(width): # Iterate over X dimension
                     if not self._is_running: break
                     self.progress_update.emit(int(50 + (i / width) * 25))
-                    img_slice = A_in[:, :, i]['pixel_value'] # This is a YZ slice, shape (num_layers, height)
+                    img_slice = tiledb_utils.read_yz_slice(self.app_config.tiledb_array_uri, i)
                     smaa_slice = smaa_engine.apply_smaa(img_slice)
-                    A_out[i, :, :] = z_lut[smaa_slice] # Write the (Z,Y) slice at index X=i
+                    smaa_slice_lut = z_lut[smaa_slice]
+
+                    # Write sparse result
+                    coords_z, coords_y = np.where(smaa_slice_lut > 0)
+                    if coords_z.size > 0:
+                        coords_x = np.full_like(coords_z, i)
+                        A_out[coords_x, coords_z, coords_y] = smaa_slice_lut[coords_z, coords_y]
             if not self._is_running: return
 
             # --- Pass 4: Final Blending ---
@@ -394,16 +413,17 @@ class ProcessingPipelineThread(QThread):
                     if not self._is_running: break
                     self.progress_update.emit(int(75 + (i / num_layers) * 25))
 
-                    # Read components for slice 'i'
-                    xy_comp = A_xy[i, :, :]['pixel_value'] # Shape (height, width)
+                    # Read components for slice 'i' by reconstructing dense arrays
+                    _, xy_comp = tiledb_utils.read_xy_slice(temp_uri_xy, i)
 
-                    # Reconstruct from XZ and YZ passes
-                    # A_xz is (y, z, x) -> A_xz[:, i, :] gives a slice over Y and X at Z=i -> shape (height, width)
-                    xz_comp = A_xz[:, i, :]['pixel_value']
+                    # A_xz is (y, z, x)
+                    xz_data = A_xz.multi_index[:, i, :]
+                    xz_comp = tiledb_utils._reconstruct_dense_slice(xz_data, (height, width), ("Y", "X"))
 
-                    # A_yz is (x, z, y) -> A_yz[:, i, :] gives a slice over X and Y at Z=i -> shape (width, height)
-                    yz_comp_raw = A_yz[:, i, :]['pixel_value']
-                    yz_comp = yz_comp_raw.T # Transpose from (width, height) to (height, width)
+                    # A_yz is (x, z, y)
+                    yz_data = A_yz.multi_index[:, i, :]
+                    yz_comp_raw = tiledb_utils._reconstruct_dense_slice(yz_data, (width, height), ("X", "Y"))
+                    yz_comp = yz_comp_raw.T
 
                     # Blend by taking the minimum (darkest) value
                     final_image = np.minimum(xy_comp, xz_comp)

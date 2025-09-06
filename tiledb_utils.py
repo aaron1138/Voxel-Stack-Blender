@@ -22,32 +22,25 @@ import cv2
 import shutil
 from typing import List, Tuple
 
-def create_dense_array_for_slices(uri: str, height: int, width: int, num_layers: int):
+def create_sparse_array_for_slices(uri: str, height: int, width: int, num_layers: int):
     """
-    Creates a 3D dense TileDB array to store image slices.
+    Creates a 3D sparse TileDB array to store image slices.
     This version is robust against pre-existing, invalid, or mismatched arrays.
-
-    Args:
-        uri (str): The URI for the TileDB array.
-        height (int): The height of the images.
-        width (int): The width of the images.
-        num_layers (int): The number of layers (Z dimension).
     """
     if tiledb.object_type(uri) == "array":
         with tiledb.open(uri, 'r') as A:
-            if A.schema.domain.shape == (num_layers, height, width):
-                print(f"Array with matching shape already exists at '{uri}'. Re-using.")
+            if A.schema.sparse and A.schema.domain.shape == (num_layers, height, width):
+                print(f"Sparse array with matching shape already exists at '{uri}'. Re-using.")
                 return
             else:
-                print(f"Array with conflicting shape found at '{uri}'. Removing and recreating.")
+                print(f"Array with conflicting schema (not sparse or wrong shape) found at '{uri}'. Removing and recreating.")
                 shutil.rmtree(uri)
     elif os.path.exists(uri):
         print(f"Non-array file/folder found at '{uri}'. Removing and recreating.")
         shutil.rmtree(uri)
 
-    print(f"Creating new TileDB array at '{uri}' with shape ({num_layers}, {height}, {width})")
+    print(f"Creating new SPARSE TileDB array at '{uri}' with shape ({num_layers}, {height}, {width})")
 
-    # Use a dimensionally-optimized tile layout for balanced performance
     dom = tiledb.Domain(
         tiledb.Dim(name="Z", domain=(0, num_layers - 1), tile=min(16, num_layers), dtype=np.uint32),
         tiledb.Dim(name="Y", domain=(0, height - 1), tile=min(256, height), dtype=np.uint32),
@@ -56,7 +49,7 @@ def create_dense_array_for_slices(uri: str, height: int, width: int, num_layers:
 
     schema = tiledb.ArraySchema(
         domain=dom,
-        sparse=False,
+        sparse=True,
         attrs=[tiledb.Attr(name="pixel_value", dtype=np.uint8)],
         cell_order='row-major',
         tile_order='row-major',
@@ -66,18 +59,11 @@ def create_dense_array_for_slices(uri: str, height: int, width: int, num_layers:
 
 def ingest_images_to_tiledb(uri: str, image_files: List[str], input_path: str, batch_size=32):
     """
-    Ingests a list of image files into a TileDB array using batching for performance.
-
-    Args:
-        uri (str): The URI of the TileDB array.
-        image_files (List[str]): A sorted list of image filenames.
-        input_path (str): The path to the directory containing the images.
-        batch_size (int): The number of images to read and write per chunk.
+    Ingests a list of image files into a sparse TileDB array using batching.
     """
     if not image_files:
         raise ValueError("Image file list cannot be empty.")
 
-    # Get dimensions from the first image
     first_image_path = os.path.join(input_path, image_files[0])
     img = cv2.imread(first_image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
@@ -85,74 +71,76 @@ def ingest_images_to_tiledb(uri: str, image_files: List[str], input_path: str, b
     height, width = img.shape
     num_layers = len(image_files)
 
-    create_dense_array_for_slices(uri, height, width, num_layers)
+    create_sparse_array_for_slices(uri, height, width, num_layers)
 
     with tiledb.open(uri, 'w') as A:
         for i in range(0, num_layers, batch_size):
             batch_filenames = image_files[i:i+batch_size]
-            actual_batch_size = len(batch_filenames)
 
-            # Pre-allocate numpy array for the batch
-            batch_data = np.zeros((actual_batch_size, height, width), dtype=np.uint8)
+            coords_z, coords_y, coords_x = [], [], []
+            data = []
 
-            # Read images into the batch array
             for j, filename in enumerate(batch_filenames):
                 filepath = os.path.join(input_path, filename)
                 img_data = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
                 if img_data is not None:
-                    batch_data[j, :, :] = img_data
+                    non_empty_y, non_empty_x = np.where(img_data > 0)
+                    if non_empty_y.size > 0:
+                        coords_z.append(np.full_like(non_empty_y, i + j))
+                        coords_y.append(non_empty_y)
+                        coords_x.append(non_empty_x)
+                        data.append(img_data[non_empty_y, non_empty_x])
 
-            # Write the entire batch to TileDB
-            print(f"Writing batch of {actual_batch_size} images to slice {i}...")
-            A[i:i+actual_batch_size, :, :] = batch_data
+            if not data: continue
+
+            Z = np.concatenate(coords_z)
+            Y = np.concatenate(coords_y)
+            X = np.concatenate(coords_x)
+            pixels = np.concatenate(data)
+
+            print(f"Writing batch of {len(batch_filenames)} images ({len(pixels)} non-empty pixels) to sparse array...")
+            A[Z, Y, X] = pixels
+
+def _reconstruct_dense_slice(data: dict, shape: Tuple[int, int], dim_names: Tuple[str, str]) -> np.ndarray:
+    """Helper to reconstruct a dense 2D slice from sparse query results."""
+    dense_slice = np.zeros(shape, dtype=np.uint8)
+    if not data or 'pixel_value' not in data or data['pixel_value'].size == 0:
+        return dense_slice
+
+    coords1 = data[dim_names[0]]
+    coords2 = data[dim_names[1]]
+    values = data['pixel_value']
+    dense_slice[coords1, coords2] = values
+    return dense_slice
 
 def read_xy_slice(uri: str, slice_index: int) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Reads a single XY slice from the TileDB array and returns it in the
-    same format as core.load_image (binary_image, original_image).
-
-    Args:
-        uri (str): The URI of the TileDB array.
-        slice_index (int): The Z-index of the slice to read.
-
-    Returns:
-        A tuple containing the binary image and the original grayscale image.
+    Reads a single XY slice from the sparse TileDB array and reconstructs it.
     """
     with tiledb.open(uri, 'r') as A:
-        original_image = A[slice_index, :, :]["pixel_value"]
+        height, width = A.schema.domain.dim("Y").shape[0], A.schema.domain.dim("X").shape[0]
+        data = A.multi_index[slice_index]
+        original_image = _reconstruct_dense_slice(data, (height, width), ("Y", "X"))
 
     _, binary_image = cv2.threshold(original_image, 127, 255, cv2.THRESH_BINARY)
-
     return binary_image, original_image
 
 def read_xz_slice(uri: str, row_index: int) -> np.ndarray:
     """
-    Reads a virtual XZ slice from the TileDB array.
-
-    Args:
-        uri (str): The URI of the TileDB array.
-        row_index (int): The Y-index of the slice to read.
-
-    Returns:
-        A 2D numpy array representing the XZ slice.
+    Reads a virtual XZ slice from the sparse TileDB array and reconstructs it.
     """
     with tiledb.open(uri, 'r') as A:
-        # Slicing is [Z, Y, X]
-        xz_slice = A[:, row_index, :]["pixel_value"]
+        num_layers, width = A.schema.domain.dim("Z").shape[0], A.schema.domain.dim("X").shape[0]
+        data = A.multi_index[:, row_index]
+        xz_slice = _reconstruct_dense_slice(data, (num_layers, width), ("Z", "X"))
     return xz_slice
 
 def read_yz_slice(uri: str, col_index: int) -> np.ndarray:
     """
-    Reads a virtual YZ slice from the TileDB array.
-
-    Args:
-        uri (str): The URI of the TileDB array.
-        col_index (int): The X-index of the slice to read.
-
-    Returns:
-        A 2D numpy array representing the YZ slice.
+    Reads a virtual YZ slice from the sparse TileDB array and reconstructs it.
     """
     with tiledb.open(uri, 'r') as A:
-        # Slicing is [Z, Y, X]
-        yz_slice = A[:, :, col_index]["pixel_value"]
+        num_layers, height = A.schema.domain.dim("Z").shape[0], A.schema.domain.dim("Y").shape[0]
+        data = A.multi_index[:, :, col_index]
+        yz_slice = _reconstruct_dense_slice(data, (num_layers, height), ("Z", "Y"))
     return yz_slice
