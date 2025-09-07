@@ -201,8 +201,6 @@ class ImageProcessorApp(QWidget):
 
         blending_layout.addLayout(common_blending_layout)
 
-        # The stacked widget is no longer needed, but we still need the ROI-specific settings.
-        # We can show/hide them based on the combo box selection.
         self.roi_settings_group = QGroupBox("ROI Mode Settings")
         self.roi_settings_group.setVisible(False) # Hidden by default
         roi_fade_layout = QVBoxLayout(self.roi_settings_group)
@@ -245,7 +243,6 @@ class ImageProcessorApp(QWidget):
         roi_fade_layout.addStretch(1)
 
         blending_layout.addWidget(self.roi_settings_group)
-
         main_processing_layout.addWidget(blending_group)
         
         general_group = QGroupBox("General")

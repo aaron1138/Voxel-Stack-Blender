@@ -20,3 +20,18 @@ logs/
 !baked-z-luts/*.json
 !presets/*.json
 !saved_luts/*.json
+
+# Application-specific temp files and folders
+/c/temp/vsbtiledb/
+smaa_output/
+smaa_test_images/
+output_standard/
+output_tiledb/
+tiledb_array/
+tiledb_smaa_array/
+tiledb_temp_smaa_*
+*.log
+*.uvtop
+# Don't ignore the main config file, but ignore test copies
+app_config.json.bak
+custom_config.json

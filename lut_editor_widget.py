@@ -307,19 +307,7 @@ class LutEditorWidget(QWidget):
     def _get_lut_from_params(self, lut_params: LutParameters) -> Optional[np.ndarray]:
         if not lut_params: return None
         try:
-            if lut_params.lut_source == "generated":
-                args = (lut_params.input_min, lut_params.input_max, lut_params.output_min, lut_params.output_max)
-                # FIX: Restore the full if/elif block for LUT generation
-                if lut_params.lut_generation_type == "spline": return lut_manager.generate_spline_lut(lut_params.spline_points, *args)
-                if lut_params.lut_generation_type == "linear": return lut_manager.generate_linear_lut(*args)
-                if lut_params.lut_generation_type == "gamma": return lut_manager.generate_gamma_lut(lut_params.gamma_value, *args)
-                if lut_params.lut_generation_type == "s_curve": return lut_manager.generate_s_curve_lut(lut_params.s_curve_contrast, *args)
-                if lut_params.lut_generation_type == "log": return lut_manager.generate_log_lut(lut_params.log_param, *args)
-                if lut_params.lut_generation_type == "exp": return lut_manager.generate_exp_lut(lut_params.exp_param, *args)
-                if lut_params.lut_generation_type == "sqrt": return lut_manager.generate_sqrt_lut(lut_params.sqrt_param, *args)
-                if lut_params.lut_generation_type == "rodbard": return lut_manager.generate_rodbard_lut(lut_params.rodbard_param, *args)
-            elif lut_params.lut_source == "file" and lut_params.fixed_lut_path and os.path.exists(lut_params.fixed_lut_path):
-                return lut_manager.load_lut(lut_params.fixed_lut_path)
+            return lut_manager.get_lut_from_params(lut_params)
         except Exception as e:
             print(f"Error generating LUT: {e}")
         return None

@@ -57,9 +57,11 @@ def create_sparse_array_for_slices(uri: str, height: int, width: int, num_layers
 
     tiledb.Array.create(uri, schema)
 
-def ingest_images_to_tiledb(uri: str, image_files: List[str], input_path: str, batch_size=32):
+def ingest_images_to_tiledb(uri: str, image_files: List[str], input_path: str, **kwargs):
     """
-    Ingests a list of image files into a sparse TileDB array using batching.
+    Ingests a list of image files into a sparse TileDB array.
+    This version processes one image at a time to keep memory usage low and constant,
+    but performs all writes inside a single array opening to maintain performance.
     """
     if not image_files:
         raise ValueError("Image file list cannot be empty.")
@@ -73,33 +75,20 @@ def ingest_images_to_tiledb(uri: str, image_files: List[str], input_path: str, b
 
     create_sparse_array_for_slices(uri, height, width, num_layers)
 
+    print("Writing image data to sparse array (slice by slice)...")
     with tiledb.open(uri, 'w') as A:
-        for i in range(0, num_layers, batch_size):
-            batch_filenames = image_files[i:i+batch_size]
+        for i, filename in enumerate(image_files):
+            filepath = os.path.join(input_path, filename)
+            img_data = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
 
-            coords_z, coords_y, coords_x = [], [], []
-            data = []
+            if img_data is not None:
+                non_empty_y, non_empty_x = np.where(img_data > 0)
 
-            for j, filename in enumerate(batch_filenames):
-                filepath = os.path.join(input_path, filename)
-                img_data = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
-                if img_data is not None:
-                    non_empty_y, non_empty_x = np.where(img_data > 0)
-                    if non_empty_y.size > 0:
-                        coords_z.append(np.full_like(non_empty_y, i + j))
-                        coords_y.append(non_empty_y)
-                        coords_x.append(non_empty_x)
-                        data.append(img_data[non_empty_y, non_empty_x])
+                if non_empty_y.size > 0:
+                    z_coords = np.full_like(non_empty_y, i)
+                    data = img_data[non_empty_y, non_empty_x]
 
-            if not data: continue
-
-            Z = np.concatenate(coords_z)
-            Y = np.concatenate(coords_y)
-            X = np.concatenate(coords_x)
-            pixels = np.concatenate(data)
-
-            print(f"Writing batch of {len(batch_filenames)} images ({len(pixels)} non-empty pixels) to sparse array...")
-            A[Z, Y, X] = pixels
+                    A[z_coords, non_empty_y, non_empty_x] = data
 
 def _reconstruct_dense_slice(data: dict, shape: Tuple[int, int], dim_names: Tuple[str, str]) -> np.ndarray:
     """Helper to reconstruct a dense 2D slice from sparse query results."""

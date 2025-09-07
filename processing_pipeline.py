@@ -1,3 +1,20 @@
+"""
+Copyright (c) 2025 Aaron Baca
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+"""
+
 import os
 import re
 import cv2
@@ -132,22 +149,24 @@ class ProcessingPipelineThread(QThread):
             input_path = ""
             processing_output_path = ""
 
-            # Set up a single, consistent session folder in the hardcoded temp directory
-            base_temp_dir = os.path.join("c:", "temp", "vsbtiledb")
-            self.session_temp_folder = os.path.join(base_temp_dir, f"session_{self.run_timestamp}")
-            os.makedirs(self.session_temp_folder, exist_ok=True)
-            self.logger.log(f"Session folder created at: {self.session_temp_folder}")
-
+            # Set up the session folder for temporary files
             if self.app_config.input_mode == "uvtools":
+                # In UVTools mode, the session folder is inside the configured working directory
+                base_temp_dir = self.app_config.uvtools_temp_folder
+                self.session_temp_folder = os.path.join(base_temp_dir, f"{self.app_config.output_file_prefix}{self.run_timestamp}")
+                os.makedirs(self.session_temp_folder, exist_ok=True)
                 input_path = self._run_uvtools_extraction(self.session_temp_folder)
-                self.logger.log("UVTools extraction completed.")
-                # Output for processed PNGs also goes inside the session folder
                 processing_output_path = os.path.join(self.session_temp_folder, "Output_Processed")
             else: # Folder mode
+                # In Folder mode, the session folder is inside the output directory
+                self.session_temp_folder = os.path.join(self.app_config.output_folder, f"session_{self.run_timestamp}")
+                os.makedirs(self.session_temp_folder, exist_ok=True)
                 input_path = self.app_config.input_folder
                 processing_output_path = self.app_config.output_folder
 
-            # Ensure the final output directory exists, especially for folder mode.
+            self.logger.log(f"Session folder created at: {self.session_temp_folder}")
+
+            # Ensure the final output directory exists
             if not os.path.isdir(processing_output_path):
                  os.makedirs(processing_output_path, exist_ok=True)
 
@@ -360,7 +379,15 @@ class ProcessingPipelineThread(QThread):
 
             # --- Pass 2: XZ Plane ---
             self.status_update.emit("SMAA: Processing XZ planes (2/4)...")
-            tiledb_utils.create_sparse_array_for_slices(temp_uri_xz, num_layers, width, height) # Y becomes the 'num_layers' dim
+            if tiledb.object_type(temp_uri_xz) != "array":
+                xz_dom = tiledb.Domain(
+                    tiledb.Dim(name="Y", domain=(0, height - 1), tile=min(256, height), dtype=np.uint32),
+                    tiledb.Dim(name="Z", domain=(0, num_layers - 1), tile=min(16, num_layers), dtype=np.uint32),
+                    tiledb.Dim(name="X", domain=(0, width - 1), tile=min(256, width), dtype=np.uint32),
+                )
+                xz_schema = tiledb.ArraySchema(domain=xz_dom, sparse=True, attrs=[tiledb.Attr(name="pixel_value", dtype=np.uint8)])
+                tiledb.Array.create(temp_uri_xz, xz_schema)
+
             z_lut = lut_manager.get_lut_from_params(self.app_config.z_correction_lut)
             with tiledb.open(self.app_config.tiledb_array_uri, 'r') as A_in, tiledb.open(temp_uri_xz, 'w') as A_out:
                 for i in range(height): # Iterate over Y dimension
@@ -416,14 +443,23 @@ class ProcessingPipelineThread(QThread):
                     # Read components for slice 'i' by reconstructing dense arrays
                     _, xy_comp = tiledb_utils.read_xy_slice(temp_uri_xy, i)
 
-                    # A_xz is (y, z, x)
-                    xz_data = A_xz.multi_index[:, i, :]
-                    xz_comp = tiledb_utils._reconstruct_dense_slice(xz_data, (height, width), ("Y", "X"))
+                    # Reconstruct XZ contribution
+                    xz_comp = np.zeros((height, width), dtype=np.uint8)
+                    for j in range(height):
+                        # Read the j-th XZ slice from the temp array and take the i-th row
+                        # Note: The read_xz_slice helper reads from the *main* array, so we can't use it.
+                        # We must query the temp array directly.
+                        xz_slice_data = A_xz.multi_index[j] # Query slice Y=j from the (Y,Z,X) temp array
+                        xz_slice = tiledb_utils._reconstruct_dense_slice(xz_slice_data, (num_layers, width), ("Z", "X"))
+                        xz_comp[j, :] = xz_slice[i, :]
 
-                    # A_yz is (x, z, y)
-                    yz_data = A_yz.multi_index[:, i, :]
-                    yz_comp_raw = tiledb_utils._reconstruct_dense_slice(yz_data, (width, height), ("X", "Y"))
-                    yz_comp = yz_comp_raw.T
+                    # Reconstruct YZ contribution
+                    yz_comp = np.zeros((height, width), dtype=np.uint8)
+                    for k in range(width):
+                        # Read the k-th YZ slice from the temp array and take the i-th row
+                        yz_slice_data = A_yz.multi_index[k] # Query slice X=k from the (X,Z,Y) temp array
+                        yz_slice = tiledb_utils._reconstruct_dense_slice(yz_slice_data, (num_layers, height), ("Z", "Y"))
+                        yz_comp[:, k] = yz_slice[i, :]
 
                     # Blend by taking the minimum (darkest) value
                     final_image = np.minimum(xy_comp, xz_comp)
