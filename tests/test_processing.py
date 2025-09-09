@@ -261,3 +261,35 @@ def test_enhanced_edt_v2_logic(base_config):
     # LUT value at 255 is 255. The calculated value is ~236 due to distance transform details.
     val_lut_near = gradient_lut[50, 49]
     assert val_lut_near > 230
+
+def test_config_serialization(base_config, tmp_path):
+    """
+    Tests that a config with Enhanced EDT v2 parameters can be saved and loaded
+    correctly, preserving the enum values.
+    """
+    # 1. Setup
+    cfg = base_config
+    cfg.blending_mode = ProcessingMode.ENHANCED_EDT_V2
+    edt_params = cfg.enhanced_edt_v2_params
+    edt_params.gradient_type = EnhancedEDTv2GradientType.PARAMETRIC
+    edt_params.curve_type = EnhancedEDTv2CurveType.EXPONENTIAL
+    edt_params.factor = 3.14
+
+    config_path = tmp_path / "test_config.json"
+
+    # 2. Execution
+    try:
+        cfg.save(config_path)
+        loaded_cfg = Config.load(config_path)
+    except Exception as e:
+        pytest.fail(f"Config save/load failed with an unexpected exception: {e}")
+
+    # 3. Assertions
+    assert loaded_cfg is not None
+    assert loaded_cfg.blending_mode == ProcessingMode.ENHANCED_EDT_V2
+
+    loaded_edt_params = loaded_cfg.enhanced_edt_v2_params
+    assert loaded_edt_params is not None
+    assert loaded_edt_params.gradient_type == EnhancedEDTv2GradientType.PARAMETRIC
+    assert loaded_edt_params.curve_type == EnhancedEDTv2CurveType.EXPONENTIAL
+    assert loaded_edt_params.factor == 3.14

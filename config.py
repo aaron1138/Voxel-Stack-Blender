@@ -241,6 +241,13 @@ class Config:
         for key, value in d.items():
             if isinstance(value, Enum):
                 d[key] = value.value
+
+        # Also handle nested enums in EnhancedEDTv2Parameters
+        if 'enhanced_edt_v2_params' in d and isinstance(d['enhanced_edt_v2_params'], dict):
+            for sub_key, sub_value in d['enhanced_edt_v2_params'].items():
+                if isinstance(sub_value, Enum):
+                    d['enhanced_edt_v2_params'][sub_key] = sub_value.value
+
         return d
 
     @classmethod
