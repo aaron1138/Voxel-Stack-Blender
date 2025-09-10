@@ -29,6 +29,7 @@ DEFAULT_NUM_WORKERS = max(1, os.cpu_count() - 1)
 
 class ProcessingMode(Enum):
     ENHANCED_EDT = "enhanced_edt"
+    ENHANCED_EDT_V2 = "enhanced_edt_v2"
     FIXED_FADE = "fixed_fade"
     ROI_FADE = "roi_fade"
     WEIGHTED_STACK = "weighted_stack"
@@ -159,6 +160,13 @@ class AnisotropicParams:
 
 
 @dataclass
+class DistanceLutPoint:
+    """A single point in the distance-to-scale LUT for Enhanced EDT v2."""
+    distance: float = 0.0
+    scale: float = 1.0
+
+
+@dataclass
 class Config:
     """
     Main application configuration, updated with new UI fields.
@@ -185,6 +193,9 @@ class Config:
     fixed_fade_distance_receding: float = 10.0
     anisotropic_params: AnisotropicParams = field(default_factory=AnisotropicParams)
     
+    # --- Enhanced EDT v2 Settings ---
+    edt_v2_distance_lut: List[DistanceLutPoint] = field(default_factory=list)
+
     # --- Weighted Stack Mode Settings ---
     weighted_falloff_type: WeightingFalloff = WeightingFalloff.LINEAR
     manual_weights: List[int] = field(default_factory=lambda: [100, 75, 50, 25])
@@ -257,6 +268,13 @@ class Config:
                         anisotropic_field_names = {f.name for f in fields(AnisotropicParams)}
                         filtered_anisotropic_data = {k: v for k, v in value.items() if k in anisotropic_field_names}
                         setattr(config_instance, key, AnisotropicParams(**filtered_anisotropic_data))
+                elif key == 'edt_v2_distance_lut':
+                    lut_points = []
+                    if isinstance(value, list):
+                        for point_data in value:
+                            if isinstance(point_data, dict):
+                                lut_points.append(DistanceLutPoint(**point_data))
+                    setattr(config_instance, key, lut_points)
                 else:
                     if field_obj.type is bool and isinstance(value, str):
                         value = value.lower() in ('true', '1', 't', 'y')

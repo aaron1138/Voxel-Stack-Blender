@@ -35,6 +35,7 @@ from config import (
 )
 from pyside_xy_blend_tab import XYBlendTab
 from processing_pipeline import ProcessingPipelineThread
+from distance_lut_editor_widget import DistanceLutEditorWidget
 
 class ImageProcessorApp(QWidget):
     """The main application window, now with a restructured UI."""
@@ -156,6 +157,7 @@ class ImageProcessorApp(QWidget):
         blending_mode_layout.addWidget(QLabel("Blending Mode:"))
         self.blending_mode_combo = QComboBox()
         self.blending_mode_combo.addItem("Enhanced EDT", ProcessingMode.ENHANCED_EDT)
+        self.blending_mode_combo.addItem("Enhanced EDT v2", ProcessingMode.ENHANCED_EDT_V2)
         self.blending_mode_combo.addItem("Fixed Fade", ProcessingMode.FIXED_FADE)
         self.blending_mode_combo.addItem("ROI Mode (Slow)", ProcessingMode.ROI_FADE)
         blending_mode_layout.addWidget(self.blending_mode_combo)
@@ -198,6 +200,13 @@ class ImageProcessorApp(QWidget):
         common_blending_layout.addWidget(anisotropic_widget, 2, 0, 1, 3)
 
         blending_layout.addLayout(common_blending_layout)
+
+        # --- Enhanced EDT v2 Settings ---
+        self.edt_v2_settings_group = QGroupBox("Enhanced EDT v2 Settings")
+        edt_v2_layout = QVBoxLayout(self.edt_v2_settings_group)
+        self.distance_lut_editor = DistanceLutEditorWidget()
+        edt_v2_layout.addWidget(self.distance_lut_editor)
+        blending_layout.addWidget(self.edt_v2_settings_group)
 
         # The stacked widget is no longer needed, but we still need the ROI-specific settings.
         # We can show/hide them based on the combo box selection.
@@ -302,6 +311,10 @@ class ImageProcessorApp(QWidget):
         self.save_config_button.clicked.connect(self._save_config_to_file)
         self.load_config_button.clicked.connect(self._load_config_from_file)
         self.start_stop_button.clicked.connect(self.toggle_processing)
+        self.distance_lut_editor.lut_changed.connect(self._on_distance_lut_changed)
+
+    def _on_distance_lut_changed(self):
+        config.edt_v2_distance_lut = self.distance_lut_editor.get_lut()
 
     def _autodetect_uvtools(self):
         """Checks for UVTools in the default location and populates the path if found."""
@@ -317,13 +330,11 @@ class ImageProcessorApp(QWidget):
         selected_mode = self.blending_mode_combo.itemData(index)
 
         # Show/hide ROI settings
-        if selected_mode == ProcessingMode.ROI_FADE:
-            self.roi_settings_group.setVisible(True)
-        else:
-            self.roi_settings_group.setVisible(False)
+        self.roi_settings_group.setVisible(selected_mode == ProcessingMode.ROI_FADE)
+        self.edt_v2_settings_group.setVisible(selected_mode == ProcessingMode.ENHANCED_EDT_V2)
 
         # Update fade distance label text
-        if selected_mode == ProcessingMode.ENHANCED_EDT:
+        if selected_mode in [ProcessingMode.ENHANCED_EDT, ProcessingMode.ENHANCED_EDT_V2]:
             self.fade_dist_label.setText("Max Fade (pixels):")
         else:
             self.fade_dist_label.setText("Fade Distance (pixels):")
@@ -365,6 +376,7 @@ class ImageProcessorApp(QWidget):
         index = self.blending_mode_combo.findData(config.blending_mode)
         self.blending_mode_combo.setCurrentIndex(index if index >= 0 else 0)
         self.on_blending_mode_changed(self.blending_mode_combo.currentIndex())
+        self.distance_lut_editor.set_lut(config.edt_v2_distance_lut)
 
         # --- ROI Settings ---
         self.roi_min_size_edit.setText(str(config.roi_params.min_size))
@@ -400,6 +412,7 @@ class ImageProcessorApp(QWidget):
         config.uvtools_output_location = "input_folder" if self.uvtools_output_input_radio.isChecked() else "working_folder"
 
         config.blending_mode = self.blending_mode_combo.currentData()
+        config.edt_v2_distance_lut = self.distance_lut_editor.get_lut()
 
         try:
             config.roi_params.min_size = int(self.roi_min_size_edit.text())
