@@ -193,3 +193,70 @@ def generate_lut_from_params(lut_params) -> np.ndarray:
 
     # Default to a linear LUT if the type is unknown
     return generate_linear_lut(*args)
+
+def get_curve_function_from_params(lut_params) -> Callable[[np.ndarray], np.ndarray]:
+    """
+    Dispatcher that returns a high-precision, float-to-float curve function
+    based on a LutParameters object. The function will operate on a [0.0, 1.0] domain.
+    """
+    lut_type = lut_params.lut_generation_type
+
+    if lut_type == "gamma":
+        gamma_value = max(0.01, lut_params.gamma_value)
+        inv_gamma = 1.0 / gamma_value
+        return lambda x: np.power(x, inv_gamma)
+
+    elif lut_type == "s_curve":
+        contrast = max(0.0, min(1.0, lut_params.s_curve_contrast))
+        def s_curve_func(x):
+            midpoint = 0.5
+            if contrast == 0.0: return x
+            elif contrast == 1.0: return np.where(x < midpoint, 0.0, 1.0)
+            else:
+                gamma_factor = 1.0 / (1.0 + contrast * 4)
+                return np.where(x < midpoint, np.power(x / midpoint, gamma_factor) * midpoint, 1.0 - np.power((1.0 - x) / midpoint, gamma_factor) * midpoint)
+        return s_curve_func
+
+    elif lut_type == "log":
+        param = max(0.01, lut_params.log_param)
+        return lambda x: np.log1p(x * param) / np.log1p(param)
+
+    elif lut_type == "exp":
+        param = max(0.01, lut_params.exp_param)
+        return lambda x: np.power(x, param)
+
+    elif lut_type == "sqrt":
+        root_value = max(0.1, lut_params.sqrt_param)
+        inv_root = 1.0 / root_value
+        return lambda x: np.power(x, inv_root)
+
+    elif lut_type == "rodbard":
+        contrast = max(0.0, min(2.0, lut_params.rodbard_param))
+        def rodbard_curve(x):
+            a, b, c, d, e = 2.51, 0.03, 2.43, 0.59, 0.14
+            num = x * (a * x + b)
+            den = x * (c * x + d) + e
+            return np.divide(num, den, out=np.zeros_like(x), where=den!=0)
+        return lambda x: (1 - contrast) * x + contrast * rodbard_curve(x)
+
+    elif lut_type == "spline":
+        control_points = lut_params.spline_points
+        if len(control_points) < 2:
+            return lambda x: x # Linear fallback
+
+        points = sorted(control_points, key=lambda p: p[0])
+        x_coords = np.array([p[0] for p in points]) / 255.0
+        y_coords = np.array([p[1] for p in points]) / 255.0
+
+        if x_coords[0] > 0:
+            x_coords = np.insert(x_coords, 0, 0)
+            y_coords = np.insert(y_coords, 0, y_coords[0])
+        if x_coords[-1] < 1.0:
+            x_coords = np.append(x_coords, 1.0)
+            y_coords = np.append(y_coords, y_coords[-1])
+
+        # Return the actual spline object, which is a callable function
+        return CubicSpline(x_coords, y_coords, bc_type='clamped')
+
+    # Default to linear
+    return lambda x: x

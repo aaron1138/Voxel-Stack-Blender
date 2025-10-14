@@ -66,20 +66,19 @@ def process_sdf_3d_window(image_chunk, config: Config):
     # Invert (so edges are white and it fades to black)
     inverted_normalized_map = 1.0 - normalized_map
 
-    # --- Apply non-linear normalization if enabled ---
+    # --- Apply non-linear normalization if enabled (THE CORRECT, HIGH-PRECISION WAY) ---
     if params.enable_non_linear_norm:
-        # We need a 256-entry LUT for the final 8-bit conversion.
-        # lut_manager can generate this from the floating point parameters.
-        lut = lut_manager.generate_lut_from_params(params.non_linear_params)
+        # Get the mathematical function (e.g., a spline object or a lambda for gamma)
+        curve_function = lut_manager.get_curve_function_from_params(params.non_linear_params)
 
-        # Scale the float map to 0-255 so we can use the LUT for mapping.
-        scaled_map = inverted_normalized_map * 255
-
-        # Apply the LUT. cv2.LUT is fast and works on numpy arrays.
-        final_gradient_chunk = cv2.LUT(scaled_map.astype(np.uint8), lut)
+        # Apply the function directly to the high-precision float array
+        final_float_map = curve_function(inverted_normalized_map)
     else:
-        # Original linear conversion
-        final_gradient_chunk = (255 * inverted_normalized_map).astype(np.uint8)
+        # If not enabled, the map remains linear
+        final_float_map = inverted_normalized_map
+
+    # Convert to 8-bit as the very last step
+    final_gradient_chunk = (255 * np.clip(final_float_map, 0.0, 1.0)).astype(np.uint8)
 
     return final_gradient_chunk
 
@@ -116,12 +115,18 @@ def process_sdf_3d_fmm_window(image_chunk, config: Config):
     normalized_map = clipped_distance_map / gradient_radius_microns
     inverted_normalized_map = 1.0 - normalized_map
 
-    # --- Apply non-linear normalization if enabled ---
+    # --- Apply non-linear normalization if enabled (THE CORRECT, HIGH-PRECISION WAY) ---
     if params.enable_non_linear_norm:
-        lut = lut_manager.generate_lut_from_params(params.non_linear_params)
-        scaled_map = inverted_normalized_map * 255
-        final_gradient_chunk = cv2.LUT(scaled_map.astype(np.uint8), lut)
+        # Get the mathematical function (e.g., a spline object or a lambda for gamma)
+        curve_function = lut_manager.get_curve_function_from_params(params.non_linear_params)
+
+        # Apply the function directly to the high-precision float array
+        final_float_map = curve_function(inverted_normalized_map)
     else:
-        final_gradient_chunk = (255 * inverted_normalized_map).astype(np.uint8)
+        # If not enabled, the map remains linear
+        final_float_map = inverted_normalized_map
+
+    # Convert to 8-bit as the very last step
+    final_gradient_chunk = (255 * np.clip(final_float_map, 0.0, 1.0)).astype(np.uint8)
 
     return final_gradient_chunk
