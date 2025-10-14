@@ -32,6 +32,8 @@ class ProcessingMode(Enum):
     FIXED_FADE = "fixed_fade"
     ROI_FADE = "roi_fade"
     WEIGHTED_STACK = "weighted_stack"
+    SDF_3D = "sdf_3d"
+    XY_BLEND_ONLY = "xy_blend_only"
 
 
 class WeightingFalloff(Enum):
@@ -159,6 +161,27 @@ class AnisotropicParams:
 
 
 @dataclass
+class SDF3DParameters:
+    """Parameters for the 3D Signed Distance Field processing mode."""
+    working_window_size: int = 10
+    buffer_layers: int = 5
+    voxel_dim_x: float = 22.0
+    voxel_dim_y: float = 22.0
+    voxel_dim_z: float = 30.0
+    gradient_radius: float = 10.0
+    radius_unit: str = "pixels" # "pixels" or "um"
+    enable_non_linear_norm: bool = False
+    non_linear_params: LutParameters = field(default_factory=LutParameters)
+
+    def __post_init__(self):
+        """Ensure nested LutParameters object is created from dict if necessary."""
+        if isinstance(self.non_linear_params, dict):
+            field_names = {f.name for f in fields(LutParameters)}
+            filtered_data = {k: v for k, v in self.non_linear_params.items() if k in field_names}
+            self.non_linear_params = LutParameters(**filtered_data)
+
+
+@dataclass
 class Config:
     """
     Main application configuration, updated with new UI fields.
@@ -184,6 +207,7 @@ class Config:
     use_fixed_fade_receding: bool = False
     fixed_fade_distance_receding: float = 10.0
     anisotropic_params: AnisotropicParams = field(default_factory=AnisotropicParams)
+    sdf_3d_params: SDF3DParameters = field(default_factory=SDF3DParameters)
     
     # --- Weighted Stack Mode Settings ---
     weighted_falloff_type: WeightingFalloff = WeightingFalloff.LINEAR
@@ -257,6 +281,11 @@ class Config:
                         anisotropic_field_names = {f.name for f in fields(AnisotropicParams)}
                         filtered_anisotropic_data = {k: v for k, v in value.items() if k in anisotropic_field_names}
                         setattr(config_instance, key, AnisotropicParams(**filtered_anisotropic_data))
+                elif key == 'sdf_3d_params':
+                    if isinstance(value, dict):
+                        sdf_3d_field_names = {f.name for f in fields(SDF3DParameters)}
+                        filtered_sdf_3d_data = {k: v for k, v in value.items() if k in sdf_3d_field_names}
+                        setattr(config_instance, key, SDF3DParameters(**filtered_sdf_3d_data))
                 else:
                     if field_obj.type is bool and isinstance(value, str):
                         value = value.lower() in ('true', '1', 't', 'y')

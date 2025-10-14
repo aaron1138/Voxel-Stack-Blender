@@ -33,7 +33,7 @@ from config import (
     app_config as config, Config, DEFAULT_NUM_WORKERS, upgrade_config,
     ProcessingMode, WeightingFalloff
 )
-from pyside_xy_blend_tab import XYBlendTab
+from pyside_xy_blend_tab import XYBlendTab, LutEditorWidget
 from processing_pipeline import ProcessingPipelineThread
 
 class ImageProcessorApp(QWidget):
@@ -155,14 +155,19 @@ class ImageProcessorApp(QWidget):
         blending_mode_layout = QHBoxLayout()
         blending_mode_layout.addWidget(QLabel("Blending Mode:"))
         self.blending_mode_combo = QComboBox()
+        self.blending_mode_combo.addItem("XY Blend Pipeline Only", ProcessingMode.XY_BLEND_ONLY)
         self.blending_mode_combo.addItem("Enhanced EDT", ProcessingMode.ENHANCED_EDT)
+        self.blending_mode_combo.addItem("3D SDF", ProcessingMode.SDF_3D)
         self.blending_mode_combo.addItem("Fixed Fade", ProcessingMode.FIXED_FADE)
         self.blending_mode_combo.addItem("ROI Mode (Slow)", ProcessingMode.ROI_FADE)
         blending_mode_layout.addWidget(self.blending_mode_combo)
         blending_mode_layout.addStretch(1)
         blending_layout.addLayout(blending_mode_layout)
 
-        common_blending_layout = QGridLayout()
+        # --- Container for 2D-specific settings ---
+        self.settings_2d_container = QWidget()
+        common_blending_layout = QGridLayout(self.settings_2d_container)
+
         common_blending_layout.addWidget(QLabel("Receding Look Down Layers:"), 0, 0)
         self.receding_layers_edit = QLineEdit("3")
         self.receding_layers_edit.setValidator(QIntValidator(0, 100, self))
@@ -194,10 +199,8 @@ class ImageProcessorApp(QWidget):
         anisotropic_layout.addWidget(self.anisotropic_y_edit)
         anisotropic_layout.addStretch(1)
 
-        # Add the new row of widgets to the grid layout
         common_blending_layout.addWidget(anisotropic_widget, 2, 0, 1, 3)
-
-        blending_layout.addLayout(common_blending_layout)
+        blending_layout.addWidget(self.settings_2d_container)
 
         # The stacked widget is no longer needed, but we still need the ROI-specific settings.
         # We can show/hide them based on the combo box selection.
@@ -243,6 +246,64 @@ class ImageProcessorApp(QWidget):
         roi_fade_layout.addStretch(1)
 
         blending_layout.addWidget(self.roi_settings_group)
+
+        # --- 3D SDF Settings ---
+        self.sdf_3d_settings_group = QGroupBox("3D SDF Mode Settings")
+        self.sdf_3d_settings_group.setVisible(False) # Hidden by default
+        sdf_3d_layout = QGridLayout(self.sdf_3d_settings_group)
+
+        sdf_3d_layout.addWidget(QLabel("Working Window (slices):"), 0, 0)
+        self.sdf_window_size_edit = QLineEdit("10")
+        self.sdf_window_size_edit.setValidator(QIntValidator(1, 100))
+        sdf_3d_layout.addWidget(self.sdf_window_size_edit, 0, 1)
+
+        sdf_3d_layout.addWidget(QLabel("Buffer Layers (above/below):"), 1, 0)
+        self.sdf_buffer_layers_edit = QLineEdit("5")
+        self.sdf_buffer_layers_edit.setValidator(QIntValidator(0, 100))
+        sdf_3d_layout.addWidget(self.sdf_buffer_layers_edit, 1, 1)
+
+        sdf_3d_layout.addWidget(QLabel("Gradient Radius:"), 2, 0)
+        self.sdf_gradient_radius_edit = QLineEdit("10.0")
+        self.sdf_gradient_radius_edit.setValidator(QDoubleValidator(0.1, 1000.0, 2))
+        sdf_3d_layout.addWidget(self.sdf_gradient_radius_edit, 2, 1)
+
+        radius_unit_layout = QHBoxLayout()
+        self.sdf_radius_unit_group = QButtonGroup(self)
+        self.sdf_radius_pixels_radio = QRadioButton("Pixels")
+        self.sdf_radius_um_radio = QRadioButton("μm")
+        self.sdf_radius_unit_group.addButton(self.sdf_radius_pixels_radio)
+        self.sdf_radius_unit_group.addButton(self.sdf_radius_um_radio)
+        radius_unit_layout.addWidget(self.sdf_radius_pixels_radio)
+        radius_unit_layout.addWidget(self.sdf_radius_um_radio)
+        sdf_3d_layout.addLayout(radius_unit_layout, 2, 2)
+
+        voxel_dim_layout = QHBoxLayout()
+        voxel_dim_layout.addWidget(QLabel("Voxel Dimensions (μm):"))
+        voxel_dim_layout.addWidget(QLabel("X:"))
+        self.sdf_voxel_x_edit = QLineEdit("22.0")
+        self.sdf_voxel_x_edit.setValidator(QDoubleValidator(0.1, 1000.0, 2))
+        voxel_dim_layout.addWidget(self.sdf_voxel_x_edit)
+        voxel_dim_layout.addWidget(QLabel("Y:"))
+        self.sdf_voxel_y_edit = QLineEdit("22.0")
+        self.sdf_voxel_y_edit.setValidator(QDoubleValidator(0.1, 1000.0, 2))
+        voxel_dim_layout.addWidget(self.sdf_voxel_y_edit)
+        voxel_dim_layout.addWidget(QLabel("Z:"))
+        self.sdf_voxel_z_edit = QLineEdit("30.0")
+        self.sdf_voxel_z_edit.setValidator(QDoubleValidator(0.1, 1000.0, 2))
+        voxel_dim_layout.addWidget(self.sdf_voxel_z_edit)
+        sdf_3d_layout.addLayout(voxel_dim_layout, 3, 0, 1, 2)
+
+        sdf_3d_layout.setColumnStretch(2, 1)
+
+        # --- Non-linear normalization settings ---
+        self.sdf_nonlinear_group = QGroupBox("Enable Non-Linear Gradient Normalization")
+        self.sdf_nonlinear_group.setCheckable(True)
+        nonlinear_layout = QVBoxLayout(self.sdf_nonlinear_group)
+        self.sdf_lut_editor = LutEditorWidget(self, update_table_on_plot=False)
+        nonlinear_layout.addWidget(self.sdf_lut_editor)
+        sdf_3d_layout.addWidget(self.sdf_nonlinear_group, 4, 0, 1, 3)
+
+        blending_layout.addWidget(self.sdf_3d_settings_group)
 
         main_processing_layout.addWidget(blending_group)
         
@@ -316,13 +377,18 @@ class ImageProcessorApp(QWidget):
     def on_blending_mode_changed(self, index):
         selected_mode = self.blending_mode_combo.itemData(index)
 
-        # Show/hide ROI settings
-        if selected_mode == ProcessingMode.ROI_FADE:
-            self.roi_settings_group.setVisible(True)
-        else:
-            self.roi_settings_group.setVisible(False)
+        # Determine visibility of panels based on the selected mode
+        is_3d_sdf_mode = selected_mode == ProcessingMode.SDF_3D
+        is_xy_only_mode = selected_mode == ProcessingMode.XY_BLEND_ONLY
+        is_roi_mode = selected_mode == ProcessingMode.ROI_FADE
 
-        # Update fade distance label text
+        # Show/hide settings groups based on selection
+        self.roi_settings_group.setVisible(is_roi_mode)
+        self.sdf_3d_settings_group.setVisible(is_3d_sdf_mode)
+        # Hide 2D container for both 3D SDF and XY Blend Only modes
+        self.settings_2d_container.setVisible(not is_3d_sdf_mode and not is_xy_only_mode)
+
+        # Update fade distance label text (only relevant for 2D modes)
         if selected_mode == ProcessingMode.ENHANCED_EDT:
             self.fade_dist_label.setText("Max Fade (pixels):")
         else:
@@ -374,6 +440,18 @@ class ImageProcessorApp(QWidget):
         self.support_max_size_edit.setText(str(config.roi_params.support_max_size))
         self.support_max_layer_edit.setText(str(config.roi_params.support_max_layer))
         self.support_max_growth_edit.setText(f"{(config.roi_params.support_max_growth - 1.0) * 100.0:.1f}")
+
+        # --- 3D SDF Settings ---
+        self.sdf_window_size_edit.setText(str(config.sdf_3d_params.working_window_size))
+        self.sdf_buffer_layers_edit.setText(str(config.sdf_3d_params.buffer_layers))
+        self.sdf_gradient_radius_edit.setText(str(config.sdf_3d_params.gradient_radius))
+        self.sdf_voxel_x_edit.setText(str(config.sdf_3d_params.voxel_dim_x))
+        self.sdf_voxel_y_edit.setText(str(config.sdf_3d_params.voxel_dim_y))
+        self.sdf_voxel_z_edit.setText(str(config.sdf_3d_params.voxel_dim_z))
+        self.sdf_radius_pixels_radio.setChecked(config.sdf_3d_params.radius_unit == "pixels")
+        self.sdf_radius_um_radio.setChecked(config.sdf_3d_params.radius_unit == "um")
+        self.sdf_nonlinear_group.setChecked(config.sdf_3d_params.enable_non_linear_norm)
+        self.sdf_lut_editor.set_lut_params(config.sdf_3d_params.non_linear_params)
 
         # --- General Settings ---
         self.thread_count_edit.setText(str(config.thread_count))
@@ -443,6 +521,22 @@ class ImageProcessorApp(QWidget):
         except ValueError: config.anisotropic_params.x_factor = 1.0
         try: config.anisotropic_params.y_factor = float(self.anisotropic_y_edit.text().replace(',', '.'))
         except ValueError: config.anisotropic_params.y_factor = 1.0
+
+        try: config.sdf_3d_params.working_window_size = int(self.sdf_window_size_edit.text())
+        except ValueError: config.sdf_3d_params.working_window_size = 10
+        try: config.sdf_3d_params.buffer_layers = int(self.sdf_buffer_layers_edit.text())
+        except ValueError: config.sdf_3d_params.buffer_layers = 5
+        try: config.sdf_3d_params.gradient_radius = float(self.sdf_gradient_radius_edit.text().replace(',', '.'))
+        except ValueError: config.sdf_3d_params.gradient_radius = 10.0
+        try: config.sdf_3d_params.voxel_dim_x = float(self.sdf_voxel_x_edit.text().replace(',', '.'))
+        except ValueError: config.sdf_3d_params.voxel_dim_x = 22.0
+        try: config.sdf_3d_params.voxel_dim_y = float(self.sdf_voxel_y_edit.text().replace(',', '.'))
+        except ValueError: config.sdf_3d_params.voxel_dim_y = 22.0
+        try: config.sdf_3d_params.voxel_dim_z = float(self.sdf_voxel_z_edit.text().replace(',', '.'))
+        except ValueError: config.sdf_3d_params.voxel_dim_z = 30.0
+        config.sdf_3d_params.radius_unit = "um" if self.sdf_radius_um_radio.isChecked() else "pixels"
+        config.sdf_3d_params.enable_non_linear_norm = self.sdf_nonlinear_group.isChecked()
+        # The LutEditorWidget directly modifies the lut_params object, so we don't need to save it manually.
 
         try: config.thread_count = int(self.thread_count_edit.text())
         except ValueError: config.thread_count = DEFAULT_NUM_WORKERS
