@@ -155,12 +155,9 @@ class ProcessingPipelineThread(QThread):
 
             image_chunk_3d = np.array(image_chunk_data)
 
-            # --- Dispatch to the correct 3D SDF processor ---
+            # --- Process the chunk using the 3D SDF processor ---
             self.status_update.emit(f"Processing 3D SDF for chunk...")
-            if self.app_config.blending_mode == ProcessingMode.SDF_3D_FMM:
-                processed_gradient_chunk = sdf_3d_processor.process_sdf_3d_fmm_window(image_chunk_3d, self.app_config)
-            else:
-                processed_gradient_chunk = sdf_3d_processor.process_sdf_3d_window(image_chunk_3d, self.app_config)
+            processed_gradient_chunk = sdf_3d_processor.process_sdf_3d_window(image_chunk_3d, self.app_config)
 
             slice_start = chunk_start_index - buffer_start_index
             slice_end = slice_start + (chunk_end_index - chunk_start_index)
@@ -326,7 +323,7 @@ class ProcessingPipelineThread(QThread):
             if not image_filenames_filtered:
                 raise ValueError("No images found in the specified folder or index range.")
 
-            if self.app_config.blending_mode in [ProcessingMode.SDF_3D, ProcessingMode.SDF_3D_FMM]:
+            if self.app_config.blending_mode == ProcessingMode.SDF_3D:
                 self._run_sdf_3d_pipeline(input_path, processing_output_path, image_filenames_filtered)
             else:
                 self._run_2d_pipeline(input_path, processing_output_path, image_filenames_filtered)

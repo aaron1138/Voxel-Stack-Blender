@@ -33,7 +33,6 @@ class ProcessingMode(Enum):
     ROI_FADE = "roi_fade"
     WEIGHTED_STACK = "weighted_stack"
     SDF_3D = "sdf_3d"
-    SDF_3D_FMM = "sdf_3d_fmm"
 
 
 class WeightingFalloff(Enum):

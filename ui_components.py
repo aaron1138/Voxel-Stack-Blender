@@ -156,8 +156,7 @@ class ImageProcessorApp(QWidget):
         blending_mode_layout.addWidget(QLabel("Blending Mode:"))
         self.blending_mode_combo = QComboBox()
         self.blending_mode_combo.addItem("Enhanced EDT", ProcessingMode.ENHANCED_EDT)
-        self.blending_mode_combo.addItem("3D SDF (slow)", ProcessingMode.SDF_3D)
-        self.blending_mode_combo.addItem("3D SDF FMM (fast)", ProcessingMode.SDF_3D_FMM)
+        self.blending_mode_combo.addItem("3D SDF", ProcessingMode.SDF_3D)
         self.blending_mode_combo.addItem("Fixed Fade", ProcessingMode.FIXED_FADE)
         self.blending_mode_combo.addItem("ROI Mode (Slow)", ProcessingMode.ROI_FADE)
         blending_mode_layout.addWidget(self.blending_mode_combo)
@@ -377,8 +376,8 @@ class ImageProcessorApp(QWidget):
     def on_blending_mode_changed(self, index):
         selected_mode = self.blending_mode_combo.itemData(index)
 
-        # Determine if a 3D SDF mode is selected
-        is_3d_sdf_mode = selected_mode in [ProcessingMode.SDF_3D, ProcessingMode.SDF_3D_FMM]
+        # Determine if the 3D SDF mode is selected
+        is_3d_sdf_mode = selected_mode == ProcessingMode.SDF_3D
 
         # Show/hide settings groups based on selection
         self.roi_settings_group.setVisible(selected_mode == ProcessingMode.ROI_FADE)
