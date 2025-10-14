@@ -167,3 +167,29 @@ def generate_spline_lut(control_points: List[List[int]], input_min: int, input_m
 
     # The curve function is now our spline
     return _generate_curve_in_range(spline, input_min, input_max, output_min, output_max)
+
+def generate_lut_from_params(lut_params) -> np.ndarray:
+    """
+    Dispatcher function that generates a LUT based on a LutParameters object.
+    """
+    args = (lut_params.input_min, lut_params.input_max, lut_params.output_min, lut_params.output_max)
+
+    if lut_params.lut_generation_type == "linear":
+        return generate_linear_lut(*args)
+    elif lut_params.lut_generation_type == "gamma":
+        return generate_gamma_lut(lut_params.gamma_value, *args)
+    elif lut_params.lut_generation_type == "s_curve":
+        return generate_s_curve_lut(lut_params.s_curve_contrast, *args)
+    elif lut_params.lut_generation_type == "log":
+        return generate_log_lut(lut_params.log_param, *args)
+    elif lut_params.lut_generation_type == "exp":
+        return generate_exp_lut(lut_params.exp_param, *args)
+    elif lut_params.lut_generation_type == "sqrt":
+        return generate_sqrt_lut(lut_params.sqrt_param, *args)
+    elif lut_params.lut_generation_type == "rodbard":
+        return generate_rodbard_lut(lut_params.rodbard_param, *args)
+    elif lut_params.lut_generation_type == "spline":
+        return generate_spline_lut(lut_params.spline_points, *args)
+
+    # Default to a linear LUT if the type is unknown
+    return generate_linear_lut(*args)
