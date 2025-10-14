@@ -260,10 +260,20 @@ class ImageProcessorApp(QWidget):
         self.sdf_buffer_layers_edit.setValidator(QIntValidator(0, 100))
         sdf_3d_layout.addWidget(self.sdf_buffer_layers_edit, 1, 1)
 
-        sdf_3d_layout.addWidget(QLabel("Gradient Radius (pixels):"), 2, 0)
+        sdf_3d_layout.addWidget(QLabel("Gradient Radius:"), 2, 0)
         self.sdf_gradient_radius_edit = QLineEdit("10.0")
         self.sdf_gradient_radius_edit.setValidator(QDoubleValidator(0.1, 1000.0, 2))
         sdf_3d_layout.addWidget(self.sdf_gradient_radius_edit, 2, 1)
+
+        radius_unit_layout = QHBoxLayout()
+        self.sdf_radius_unit_group = QButtonGroup(self)
+        self.sdf_radius_pixels_radio = QRadioButton("Pixels")
+        self.sdf_radius_um_radio = QRadioButton("μm")
+        self.sdf_radius_unit_group.addButton(self.sdf_radius_pixels_radio)
+        self.sdf_radius_unit_group.addButton(self.sdf_radius_um_radio)
+        radius_unit_layout.addWidget(self.sdf_radius_pixels_radio)
+        radius_unit_layout.addWidget(self.sdf_radius_um_radio)
+        sdf_3d_layout.addLayout(radius_unit_layout, 2, 2)
 
         voxel_dim_layout = QHBoxLayout()
         voxel_dim_layout.addWidget(QLabel("Voxel Dimensions (μm):"))
@@ -420,6 +430,8 @@ class ImageProcessorApp(QWidget):
         self.sdf_voxel_x_edit.setText(str(config.sdf_3d_params.voxel_dim_x))
         self.sdf_voxel_y_edit.setText(str(config.sdf_3d_params.voxel_dim_y))
         self.sdf_voxel_z_edit.setText(str(config.sdf_3d_params.voxel_dim_z))
+        self.sdf_radius_pixels_radio.setChecked(config.sdf_3d_params.radius_unit == "pixels")
+        self.sdf_radius_um_radio.setChecked(config.sdf_3d_params.radius_unit == "um")
 
         # --- General Settings ---
         self.thread_count_edit.setText(str(config.thread_count))
@@ -502,6 +514,7 @@ class ImageProcessorApp(QWidget):
         except ValueError: config.sdf_3d_params.voxel_dim_y = 22.0
         try: config.sdf_3d_params.voxel_dim_z = float(self.sdf_voxel_z_edit.text().replace(',', '.'))
         except ValueError: config.sdf_3d_params.voxel_dim_z = 30.0
+        config.sdf_3d_params.radius_unit = "um" if self.sdf_radius_um_radio.isChecked() else "pixels"
 
         try: config.thread_count = int(self.thread_count_edit.text())
         except ValueError: config.thread_count = DEFAULT_NUM_WORKERS

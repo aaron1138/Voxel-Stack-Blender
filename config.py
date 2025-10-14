@@ -168,6 +168,7 @@ class SDF3DParameters:
     voxel_dim_y: float = 22.0
     voxel_dim_z: float = 30.0
     gradient_radius: float = 10.0
+    radius_unit: str = "pixels" # "pixels" or "um"
 
 
 @dataclass

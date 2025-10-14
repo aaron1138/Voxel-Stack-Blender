@@ -45,7 +45,13 @@ def process_sdf_3d_window(image_chunk, config: Config):
     distance_map_microns = ndimage.distance_transform_edt(inverted_chunk, sampling=voxel_dims)
 
     # Normalize the gradient based on the user-defined radius
-    gradient_radius_microns = params.gradient_radius
+    if params.radius_unit == "pixels":
+        # Convert pixel radius to an effective micrometer radius
+        avg_pixel_dim = (params.voxel_dim_x + params.voxel_dim_y + params.voxel_dim_z) / 3.0
+        gradient_radius_microns = params.gradient_radius * avg_pixel_dim
+    else: # Microns
+        gradient_radius_microns = params.gradient_radius
+
     if gradient_radius_microns <= 0:
         gradient_radius_microns = 1.0 # Avoid division by zero
 
