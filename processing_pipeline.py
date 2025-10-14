@@ -114,14 +114,14 @@ class ProcessingPipelineThread(QThread):
         return output_filepath
 
     def _run_sdf_3d_pipeline(self, input_path: str, processing_output_path: str, image_filenames_filtered: List[str]):
-        """Runs the 3D SDF processing pipeline with a sliding window."""
+        """
+        Runs the 3D SDF processing pipeline with a sliding window.
+        This method acts as a dispatcher to either the SciPy (slow) or FMM (fast) implementation.
+        """
         params = self.app_config.sdf_3d_params
         window_size = params.working_window_size
         buffer_size = params.buffer_layers
         total_images = len(image_filenames_filtered)
-
-        # This pipeline processes in chunks, so threading per image is not suitable.
-        # It runs sequentially, processing one chunk at a time.
 
         processed_count = 0
 
@@ -131,17 +131,13 @@ class ProcessingPipelineThread(QThread):
                 self.status_update.emit("Processing stopped by user.")
                 break
 
-            # --- Define the slice range for the current chunk ---
             chunk_start_index = i
             chunk_end_index = min(i + window_size, total_images)
-
-            # --- Define the range with buffers ---
             buffer_start_index = max(0, chunk_start_index - buffer_size)
             buffer_end_index = min(total_images, chunk_end_index + buffer_size)
 
             self.status_update.emit(f"Loading chunk {chunk_start_index}-{chunk_end_index-1} with buffers...")
 
-            # --- Load all images for the buffered chunk ---
             image_chunk_data = []
             original_images_for_merge = []
 
@@ -150,9 +146,8 @@ class ProcessingPipelineThread(QThread):
                 filepath = os.path.join(input_path, filename)
                 binary_img, original_img = core.load_image(filepath)
                 if binary_img is None: continue
-                image_chunk_data.append(binary_img // 255) # Convert to 0/1 for SDF
+                image_chunk_data.append(binary_img // 255)
 
-                # We only need the original images for the actual (non-buffer) part of the chunk
                 if chunk_start_index <= j < chunk_end_index:
                     original_images_for_merge.append(original_img)
 
@@ -160,23 +155,20 @@ class ProcessingPipelineThread(QThread):
 
             image_chunk_3d = np.array(image_chunk_data)
 
-            # --- Process the chunk using the 3D SDF processor ---
+            # --- Dispatch to the correct 3D SDF processor ---
             self.status_update.emit(f"Processing 3D SDF for chunk...")
-            processed_gradient_chunk = sdf_3d_processor.process_sdf_3d_window(image_chunk_3d, self.app_config)
+            if self.app_config.blending_mode == ProcessingMode.SDF_3D_FMM:
+                processed_gradient_chunk = sdf_3d_processor.process_sdf_3d_fmm_window(image_chunk_3d, self.app_config)
+            else:
+                processed_gradient_chunk = sdf_3d_processor.process_sdf_3d_window(image_chunk_3d, self.app_config)
 
-            # --- Slice the processed chunk to get the relevant (non-buffer) part ---
-            # The start of our actual data within the processed buffer
             slice_start = chunk_start_index - buffer_start_index
-            # The end of our actual data
             slice_end = slice_start + (chunk_end_index - chunk_start_index)
-
             relevant_gradients = processed_gradient_chunk[slice_start:slice_end]
 
-            # --- Merge, apply XY pipeline, and save the results ---
             self.status_update.emit(f"Merging and saving processed layers...")
             for idx, receding_gradient in enumerate(relevant_gradients):
                 original_image = original_images_for_merge[idx]
-
                 output_image_from_core = core.merge_to_output(original_image, receding_gradient)
                 final_processed_image = xy_blend_processor.process_xy_pipeline(output_image_from_core, self.app_config.xy_blend_pipeline)
 
@@ -334,7 +326,7 @@ class ProcessingPipelineThread(QThread):
             if not image_filenames_filtered:
                 raise ValueError("No images found in the specified folder or index range.")
 
-            if self.app_config.blending_mode == ProcessingMode.SDF_3D:
+            if self.app_config.blending_mode in [ProcessingMode.SDF_3D, ProcessingMode.SDF_3D_FMM]:
                 self._run_sdf_3d_pipeline(input_path, processing_output_path, image_filenames_filtered)
             else:
                 self._run_2d_pipeline(input_path, processing_output_path, image_filenames_filtered)

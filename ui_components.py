@@ -156,14 +156,18 @@ class ImageProcessorApp(QWidget):
         blending_mode_layout.addWidget(QLabel("Blending Mode:"))
         self.blending_mode_combo = QComboBox()
         self.blending_mode_combo.addItem("Enhanced EDT", ProcessingMode.ENHANCED_EDT)
-        self.blending_mode_combo.addItem("3D SDF", ProcessingMode.SDF_3D)
+        self.blending_mode_combo.addItem("3D SDF (slow)", ProcessingMode.SDF_3D)
+        self.blending_mode_combo.addItem("3D SDF FMM (fast)", ProcessingMode.SDF_3D_FMM)
         self.blending_mode_combo.addItem("Fixed Fade", ProcessingMode.FIXED_FADE)
         self.blending_mode_combo.addItem("ROI Mode (Slow)", ProcessingMode.ROI_FADE)
         blending_mode_layout.addWidget(self.blending_mode_combo)
         blending_mode_layout.addStretch(1)
         blending_layout.addLayout(blending_mode_layout)
 
-        common_blending_layout = QGridLayout()
+        # --- Container for 2D-specific settings ---
+        self.settings_2d_container = QWidget()
+        common_blending_layout = QGridLayout(self.settings_2d_container)
+
         common_blending_layout.addWidget(QLabel("Receding Look Down Layers:"), 0, 0)
         self.receding_layers_edit = QLineEdit("3")
         self.receding_layers_edit.setValidator(QIntValidator(0, 100, self))
@@ -195,10 +199,8 @@ class ImageProcessorApp(QWidget):
         anisotropic_layout.addWidget(self.anisotropic_y_edit)
         anisotropic_layout.addStretch(1)
 
-        # Add the new row of widgets to the grid layout
         common_blending_layout.addWidget(anisotropic_widget, 2, 0, 1, 3)
-
-        blending_layout.addLayout(common_blending_layout)
+        blending_layout.addWidget(self.settings_2d_container)
 
         # The stacked widget is no longer needed, but we still need the ROI-specific settings.
         # We can show/hide them based on the combo box selection.
@@ -366,12 +368,16 @@ class ImageProcessorApp(QWidget):
     def on_blending_mode_changed(self, index):
         selected_mode = self.blending_mode_combo.itemData(index)
 
+        # Determine if a 3D SDF mode is selected
+        is_3d_sdf_mode = selected_mode in [ProcessingMode.SDF_3D, ProcessingMode.SDF_3D_FMM]
+
         # Show/hide settings groups based on selection
         self.roi_settings_group.setVisible(selected_mode == ProcessingMode.ROI_FADE)
-        self.sdf_3d_settings_group.setVisible(selected_mode == ProcessingMode.SDF_3D)
+        self.sdf_3d_settings_group.setVisible(is_3d_sdf_mode)
+        self.settings_2d_container.setVisible(not is_3d_sdf_mode)
 
-        # Update fade distance label text
-        if selected_mode == ProcessingMode.ENHANCED_EDT or selected_mode == ProcessingMode.SDF_3D:
+        # Update fade distance label text (only relevant for 2D modes)
+        if selected_mode == ProcessingMode.ENHANCED_EDT:
             self.fade_dist_label.setText("Max Fade (pixels):")
         else:
             self.fade_dist_label.setText("Fade Distance (pixels):")
