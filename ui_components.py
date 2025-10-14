@@ -33,7 +33,7 @@ from config import (
     app_config as config, Config, DEFAULT_NUM_WORKERS, upgrade_config,
     ProcessingMode, WeightingFalloff
 )
-from pyside_xy_blend_tab import LutEditorWidget
+from pyside_xy_blend_tab import XYBlendTab, LutEditorWidget
 from processing_pipeline import ProcessingPipelineThread
 
 class ImageProcessorApp(QWidget):
