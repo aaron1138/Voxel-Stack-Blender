@@ -299,7 +299,7 @@ class ImageProcessorApp(QWidget):
         self.sdf_nonlinear_group = QGroupBox("Enable Non-Linear Gradient Normalization")
         self.sdf_nonlinear_group.setCheckable(True)
         nonlinear_layout = QVBoxLayout(self.sdf_nonlinear_group)
-        self.sdf_lut_editor = LutEditorWidget(self)
+        self.sdf_lut_editor = LutEditorWidget(self, update_table_on_plot=False)
         nonlinear_layout.addWidget(self.sdf_lut_editor)
         sdf_3d_layout.addWidget(self.sdf_nonlinear_group, 4, 0, 1, 3)
 

@@ -141,9 +141,10 @@ class LutEditorWidget(QWidget):
     lut_params_changed = Signal()
     toggle_table_visibility_requested = Signal(bool)
 
-    def __init__(self, parent_tab):
+    def __init__(self, parent_widget, update_table_on_plot: bool = False):
         super().__init__()
-        self.parent_tab = parent_tab
+        self.parent_widget = parent_widget
+        self.update_table_on_plot = update_table_on_plot
         self._lut_params = None
         self._setup_ui()
         self._connect_signals()
@@ -332,7 +333,10 @@ class LutEditorWidget(QWidget):
         points_to_show = self._lut_params.spline_points if is_spline_mode else None
         self.preview_canvas.set_interactive(is_spline_mode)
         self.preview_canvas.update_plot(curve_data=generated_lut, points_data=points_to_show)
-        self.parent_tab._update_lut_table(generated_lut)
+
+        if self.update_table_on_plot:
+            # This call is now conditional, preventing the crash.
+            self.parent_widget._update_lut_table(generated_lut)
 
     def _load_lut_from_file(self):
         filepath, _ = QFileDialog.getOpenFileName(self, "Load LUT File", "", "JSON Files (*.json)")
