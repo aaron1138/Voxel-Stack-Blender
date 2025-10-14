@@ -14,6 +14,7 @@ from PySide6.QtCore import QThread, Signal
 from config import Config, XYBlendOperation, ProcessingMode
 import processing_core as core
 import xy_blend_processor
+import sdf_3d_processor
 from roi_tracker import ROITracker
 import uvtools_wrapper
 from logger import Logger
@@ -112,129 +113,234 @@ class ProcessingPipelineThread(QThread):
         print(f"Successfully wrote output file: {output_filepath}") # Verification print
         return output_filepath
 
-    def run(self):
-        """
-        The main processing loop.
-        """
-        self.logger.log("Run started.")
-        self.logger.log_config(self.app_config)
-        self.status_update.emit("Processing started...")
+    def _run_sdf_3d_pipeline(self, input_path: str, processing_output_path: str, image_filenames_filtered: List[str]):
+        """Runs the 3D SDF processing pipeline with a sliding window."""
+        params = self.app_config.sdf_3d_params
+        window_size = params.working_window_size
+        buffer_size = params.buffer_layers
+        total_images = len(image_filenames_filtered)
+
+        # This pipeline processes in chunks, so threading per image is not suitable.
+        # It runs sequentially, processing one chunk at a time.
+
+        processed_count = 0
+
+        for i in range(0, total_images, window_size):
+            if not self._is_running:
+                self.logger.log("Processing stopped by user.")
+                self.status_update.emit("Processing stopped by user.")
+                break
+
+            # --- Define the slice range for the current chunk ---
+            chunk_start_index = i
+            chunk_end_index = min(i + window_size, total_images)
+
+            # --- Define the range with buffers ---
+            buffer_start_index = max(0, chunk_start_index - buffer_size)
+            buffer_end_index = min(total_images, chunk_end_index + buffer_size)
+
+            self.status_update.emit(f"Loading chunk {chunk_start_index}-{chunk_end_index-1} with buffers...")
+
+            # --- Load all images for the buffered chunk ---
+            image_chunk_data = []
+            original_images_for_merge = []
+
+            for j in range(buffer_start_index, buffer_end_index):
+                filename = image_filenames_filtered[j]
+                filepath = os.path.join(input_path, filename)
+                binary_img, original_img = core.load_image(filepath)
+                if binary_img is None: continue
+                image_chunk_data.append(binary_img // 255) # Convert to 0/1 for SDF
+
+                # We only need the original images for the actual (non-buffer) part of the chunk
+                if chunk_start_index <= j < chunk_end_index:
+                    original_images_for_merge.append(original_img)
+
+            if not image_chunk_data: continue
+
+            image_chunk_3d = np.array(image_chunk_data)
+
+            # --- Process the chunk using the 3D SDF processor ---
+            self.status_update.emit(f"Processing 3D SDF for chunk...")
+            processed_gradient_chunk = sdf_3d_processor.process_sdf_3d_window(image_chunk_3d, self.app_config)
+
+            # --- Slice the processed chunk to get the relevant (non-buffer) part ---
+            # The start of our actual data within the processed buffer
+            slice_start = chunk_start_index - buffer_start_index
+            # The end of our actual data
+            slice_end = slice_start + (chunk_end_index - chunk_start_index)
+
+            relevant_gradients = processed_gradient_chunk[slice_start:slice_end]
+
+            # --- Merge, apply XY pipeline, and save the results ---
+            self.status_update.emit(f"Merging and saving processed layers...")
+            for idx, receding_gradient in enumerate(relevant_gradients):
+                original_image = original_images_for_merge[idx]
+
+                output_image_from_core = core.merge_to_output(original_image, receding_gradient)
+                final_processed_image = xy_blend_processor.process_xy_pipeline(output_image_from_core, self.app_config.xy_blend_pipeline)
+
+                output_filename = os.path.basename(image_filenames_filtered[chunk_start_index + idx])
+                output_filepath = os.path.join(processing_output_path, output_filename)
+                cv2.imwrite(output_filepath, final_processed_image)
+
+                processed_count += 1
+                self.progress_update.emit(int((processed_count / total_images) * 100))
+
+        self.logger.log("3D SDF pipeline complete.")
+
+
+    def _setup_paths_and_get_files(self):
+        """Handles I/O setup, UVTools extraction, and returns a list of files to process."""
+        input_path = ""
+        processing_output_path = ""
+
+        if self.app_config.input_mode == "uvtools":
+            input_path = self._run_uvtools_extraction()
+            self.logger.log("UVTools extraction completed.")
+            processing_output_path = os.path.join(self.session_temp_folder, "Output")
+            os.makedirs(processing_output_path, exist_ok=True)
+        else:
+            input_path = self.app_config.input_folder
+            processing_output_path = self.app_config.output_folder
 
         numeric_pattern = re.compile(r'(\d+)\.\w+$')
         def get_numeric_part(filename):
             match = numeric_pattern.search(filename)
             return int(match.group(1)) if match else float('inf')
 
-        try:
-            input_path = ""
-            processing_output_path = ""
+        all_image_filenames = sorted(
+            [f for f in os.listdir(input_path) if f.lower().endswith(('.png', '.bmp', '.tif', '.tiff'))],
+            key=get_numeric_part
+        )
 
-            if self.app_config.input_mode == "uvtools":
-                input_path = self._run_uvtools_extraction()
-                self.logger.log("UVTools extraction completed.")
-                processing_output_path = os.path.join(self.session_temp_folder, "Output")
-                os.makedirs(processing_output_path, exist_ok=True)
+        image_filenames_filtered = [f for f in all_image_filenames if
+                                    (self.app_config.start_index is None or get_numeric_part(f) >= self.app_config.start_index) and
+                                    (self.app_config.stop_index is None or get_numeric_part(f) <= self.app_config.stop_index)]
+
+        return input_path, processing_output_path, image_filenames_filtered
+
+    def _finalize_processing(self, processing_output_path: str):
+        """Handles UVTools repacking and temporary file cleanup."""
+        if self.app_config.input_mode == "uvtools" and not self.error_occurred:
+            if self._is_running:
+                self.status_update.emit("All image processing tasks completed.")
             else:
-                input_path = self.app_config.input_folder
-                processing_output_path = self.app_config.output_folder
+                self.status_update.emit("Processing stopped by user, repacking completed layers...")
 
-            all_image_filenames = sorted(
-                [f for f in os.listdir(input_path) if f.lower().endswith(('.png', '.bmp', '.tif', '.tiff'))],
-                key=get_numeric_part
-            )
+            self.logger.log("Starting UVTools repack.")
+            self._run_uvtools_repack(processing_output_path)
+            self.logger.log("UVTools repack completed.")
 
-            image_filenames_filtered = []
-            for f in all_image_filenames:
-                numeric_part = get_numeric_part(f)
-                if self.app_config.start_index is not None and numeric_part < self.app_config.start_index:
+        # This cleanup logic is now shared.
+        if self.app_config.input_mode == "uvtools" and self.app_config.uvtools_delete_temp_on_completion and not self.error_occurred:
+            if self.session_temp_folder and os.path.isdir(self.session_temp_folder):
+                self.status_update.emit(f"Deleting temporary folder: {self.session_temp_folder}")
+                self.logger.log("Deleting temporary files.")
+                try:
+                    shutil.rmtree(self.session_temp_folder)
+                    self.status_update.emit("Temporary files deleted.")
+                    self.logger.log("Temporary files deleted successfully.")
+                except Exception as e:
+                    self.logger.log(f"ERROR: Could not delete temp folder: {e}")
+                    self.error_signal.emit(f"Could not delete temp folder: {e}")
+
+    def _run_2d_pipeline(self, input_path: str, processing_output_path: str, image_filenames_filtered: List[str]):
+        """Runs the original 2D processing pipeline."""
+        total_images = len(image_filenames_filtered)
+        self.logger.log(f"Found {total_images} images to process for 2D pipeline.")
+        prior_binary_masks_cache = collections.deque(maxlen=self.app_config.receding_layers)
+        tracker = ROITracker()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            active_futures = set()
+            processed_count = 0
+            max_active_futures = self.max_workers * 2
+
+            def process_completed_futures(completed_futures):
+                nonlocal processed_count
+                for future in completed_futures:
+                    try:
+                        future.result()
+                        processed_count += 1
+                        self.status_update.emit(f"Completed processing images ({processed_count}/{total_images})")
+                        self.progress_update.emit(int((processed_count / total_images) * 100))
+                    except Exception as exc:
+                        import traceback
+                        self.error_occurred = True
+                        error_detail = f"An image processing task failed: {exc}\n{traceback.format_exc()}"
+                        self.logger.log(f"ERROR during image processing task: {error_detail}")
+                        self.error_signal.emit(error_detail)
+                        self.stop_processing()
+                    active_futures.remove(future)
+
+            for i, filename in enumerate(image_filenames_filtered):
+                if not self._is_running:
+                    self.logger.log("Processing stopped by user.")
+                    self.status_update.emit("Processing stopped by user.")
+                    break
+
+                if len(active_futures) >= max_active_futures:
+                    done, _ = concurrent.futures.wait(active_futures, return_when=concurrent.futures.FIRST_COMPLETED)
+                    process_completed_futures(done)
+
+                self.status_update.emit(f"Analyzing {filename} ({i + 1}/{total_images})")
+                filepath = os.path.join(input_path, filename)
+                binary_image, original_image = core.load_image(filepath)
+                if binary_image is None:
+                    self.status_update.emit(f"Skipping unloadable image: {filename}")
+                    total_images = max(1, total_images - 1)
                     continue
-                if self.app_config.stop_index is not None and numeric_part > self.app_config.stop_index:
-                    continue
-                image_filenames_filtered.append(f)
 
-            total_images = len(image_filenames_filtered)
-            if total_images == 0:
-                error_msg = "No images found in the specified folder or index range."
-                self.logger.log(f"ERROR: {error_msg}")
-                self.error_signal.emit(error_msg)
-                return
+                classified_rois = []
+                if self.app_config.blending_mode == ProcessingMode.ROI_FADE:
+                    numeric_pattern = re.compile(r'(\d+)\.\w+$')
+                    def get_numeric_part(filename):
+                        match = numeric_pattern.search(filename)
+                        return int(match.group(1)) if match else float('inf')
+                    layer_index = get_numeric_part(filename)
+                    rois = core.identify_rois(binary_image, self.app_config.roi_params.min_size)
+                    classified_rois = tracker.update_and_classify(rois, layer_index, self.app_config)
 
-            self.logger.log(f"Found {total_images} images to process.")
-            prior_binary_masks_cache = collections.deque(maxlen=self.app_config.receding_layers)
-            tracker = ROITracker()
+                image_data_for_task = {
+                    'filepath': filepath, 'binary_image': binary_image,
+                    'original_image': original_image, 'classified_rois': classified_rois
+                }
+                future = executor.submit(
+                    self._process_single_image_task, image_data_for_task,
+                    list(reversed(prior_binary_masks_cache)), self.app_config,
+                    self.app_config.xy_blend_pipeline, processing_output_path,
+                    self.app_config.debug_save
+                )
+                active_futures.add(future)
+                prior_binary_masks_cache.append(binary_image)
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                active_futures = set()
-                processed_count = 0
-                max_active_futures = self.max_workers * 2
+            if self._is_running and active_futures:
+                process_completed_futures(concurrent.futures.as_completed(active_futures))
 
-                def process_completed_futures(completed_futures):
-                    nonlocal processed_count
-                    for future in completed_futures:
-                        try:
-                            future.result()
-                            processed_count += 1
-                            self.status_update.emit(f"Completed processing images ({processed_count}/{total_images})")
-                            self.progress_update.emit(int((processed_count / total_images) * 100))
-                        except Exception as exc:
-                            import traceback
-                            self.error_occurred = True
-                            error_detail = f"An image processing task failed: {exc}\n{traceback.format_exc()}"
-                            self.logger.log(f"ERROR during image processing task: {error_detail}")
-                            self.error_signal.emit(error_detail)
-                            self.stop_processing()
-                        active_futures.remove(future)
+        self.logger.log("Stack blending complete.")
 
-                for i, filename in enumerate(image_filenames_filtered):
-                    if not self._is_running:
-                        self.logger.log("Processing stopped by user.")
-                        self.status_update.emit("Processing stopped by user.")
-                        break
+    def run(self):
+        """
+        The main processing loop, now refactored.
+        """
+        self.logger.log("Run started.")
+        self.logger.log_config(self.app_config)
+        self.status_update.emit("Processing started...")
 
-                    if len(active_futures) >= max_active_futures:
-                        done, _ = concurrent.futures.wait(active_futures, return_when=concurrent.futures.FIRST_COMPLETED)
-                        process_completed_futures(done)
+        try:
+            input_path, processing_output_path, image_filenames_filtered = self._setup_paths_and_get_files()
 
-                    self.status_update.emit(f"Analyzing {filename} ({i + 1}/{total_images})")
-                    filepath = os.path.join(input_path, filename)
-                    binary_image, original_image = core.load_image(filepath)
-                    if binary_image is None:
-                        self.status_update.emit(f"Skipping unloadable image: {filename}")
-                        total_images = max(1, total_images - 1)
-                        continue
+            if not image_filenames_filtered:
+                raise ValueError("No images found in the specified folder or index range.")
 
-                    classified_rois = []
-                    if self.app_config.blending_mode == ProcessingMode.ROI_FADE:
-                        layer_index = get_numeric_part(filename)
-                        rois = core.identify_rois(binary_image, self.app_config.roi_params.min_size)
-                        classified_rois = tracker.update_and_classify(rois, layer_index, self.app_config)
+            if self.app_config.blending_mode == ProcessingMode.SDF_3D:
+                self._run_sdf_3d_pipeline(input_path, processing_output_path, image_filenames_filtered)
+            else:
+                self._run_2d_pipeline(input_path, processing_output_path, image_filenames_filtered)
 
-                    image_data_for_task = {
-                        'filepath': filepath, 'binary_image': binary_image,
-                        'original_image': original_image, 'classified_rois': classified_rois
-                    }
-                    future = executor.submit(
-                        self._process_single_image_task, image_data_for_task,
-                        list(reversed(prior_binary_masks_cache)), self.app_config,
-                        self.app_config.xy_blend_pipeline, processing_output_path,
-                        self.app_config.debug_save
-                    )
-                    active_futures.add(future)
-                    prior_binary_masks_cache.append(binary_image)
-
-                if self._is_running and active_futures:
-                    process_completed_futures(concurrent.futures.as_completed(active_futures))
-
-            self.logger.log("Stack blending complete.")
-            if self.app_config.input_mode == "uvtools" and not self.error_occurred:
-                if self._is_running:
-                    self.status_update.emit("All image processing tasks completed.")
-                else:
-                    self.status_update.emit("Processing stopped by user, repacking completed layers...")
-
-                self.logger.log("Starting UVTools repack.")
-                self._run_uvtools_repack(processing_output_path)
-                self.logger.log("UVTools repack completed.")
+            # Finalization (repacking, cleanup) is now common to both pipelines
+            self._finalize_processing(processing_output_path)
 
         except Exception as e:
             self.error_occurred = True
@@ -244,18 +350,6 @@ class ProcessingPipelineThread(QThread):
             self.error_signal.emit(error_info)
         finally:
             self.logger.log("Run finalizing.")
-            if self.app_config.input_mode == "uvtools" and self.app_config.uvtools_delete_temp_on_completion and not self.error_occurred:
-                if self.session_temp_folder and os.path.isdir(self.session_temp_folder):
-                    self.status_update.emit(f"Deleting temporary folder: {self.session_temp_folder}")
-                    self.logger.log("Deleting temporary files.")
-                    try:
-                        shutil.rmtree(self.session_temp_folder)
-                        self.status_update.emit("Temporary files deleted.")
-                        self.logger.log("Temporary files deleted successfully.")
-                    except Exception as e:
-                        self.logger.log(f"ERROR: Could not delete temp folder: {e}")
-                        self.error_signal.emit(f"Could not delete temp folder: {e}")
-
             if not self.error_occurred and self._is_running:
                 self.status_update.emit("Processing complete!")
                 self.logger.log("Run completed successfully.")

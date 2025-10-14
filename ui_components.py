@@ -156,6 +156,7 @@ class ImageProcessorApp(QWidget):
         blending_mode_layout.addWidget(QLabel("Blending Mode:"))
         self.blending_mode_combo = QComboBox()
         self.blending_mode_combo.addItem("Enhanced EDT", ProcessingMode.ENHANCED_EDT)
+        self.blending_mode_combo.addItem("3D SDF", ProcessingMode.SDF_3D)
         self.blending_mode_combo.addItem("Fixed Fade", ProcessingMode.FIXED_FADE)
         self.blending_mode_combo.addItem("ROI Mode (Slow)", ProcessingMode.ROI_FADE)
         blending_mode_layout.addWidget(self.blending_mode_combo)
@@ -244,6 +245,45 @@ class ImageProcessorApp(QWidget):
 
         blending_layout.addWidget(self.roi_settings_group)
 
+        # --- 3D SDF Settings ---
+        self.sdf_3d_settings_group = QGroupBox("3D SDF Mode Settings")
+        self.sdf_3d_settings_group.setVisible(False) # Hidden by default
+        sdf_3d_layout = QGridLayout(self.sdf_3d_settings_group)
+
+        sdf_3d_layout.addWidget(QLabel("Working Window (slices):"), 0, 0)
+        self.sdf_window_size_edit = QLineEdit("10")
+        self.sdf_window_size_edit.setValidator(QIntValidator(1, 100))
+        sdf_3d_layout.addWidget(self.sdf_window_size_edit, 0, 1)
+
+        sdf_3d_layout.addWidget(QLabel("Buffer Layers (above/below):"), 1, 0)
+        self.sdf_buffer_layers_edit = QLineEdit("5")
+        self.sdf_buffer_layers_edit.setValidator(QIntValidator(0, 100))
+        sdf_3d_layout.addWidget(self.sdf_buffer_layers_edit, 1, 1)
+
+        sdf_3d_layout.addWidget(QLabel("Gradient Radius (pixels):"), 2, 0)
+        self.sdf_gradient_radius_edit = QLineEdit("10.0")
+        self.sdf_gradient_radius_edit.setValidator(QDoubleValidator(0.1, 1000.0, 2))
+        sdf_3d_layout.addWidget(self.sdf_gradient_radius_edit, 2, 1)
+
+        voxel_dim_layout = QHBoxLayout()
+        voxel_dim_layout.addWidget(QLabel("Voxel Dimensions (μm):"))
+        voxel_dim_layout.addWidget(QLabel("X:"))
+        self.sdf_voxel_x_edit = QLineEdit("22.0")
+        self.sdf_voxel_x_edit.setValidator(QDoubleValidator(0.1, 1000.0, 2))
+        voxel_dim_layout.addWidget(self.sdf_voxel_x_edit)
+        voxel_dim_layout.addWidget(QLabel("Y:"))
+        self.sdf_voxel_y_edit = QLineEdit("22.0")
+        self.sdf_voxel_y_edit.setValidator(QDoubleValidator(0.1, 1000.0, 2))
+        voxel_dim_layout.addWidget(self.sdf_voxel_y_edit)
+        voxel_dim_layout.addWidget(QLabel("Z:"))
+        self.sdf_voxel_z_edit = QLineEdit("30.0")
+        self.sdf_voxel_z_edit.setValidator(QDoubleValidator(0.1, 1000.0, 2))
+        voxel_dim_layout.addWidget(self.sdf_voxel_z_edit)
+        sdf_3d_layout.addLayout(voxel_dim_layout, 3, 0, 1, 2)
+
+        sdf_3d_layout.setColumnStretch(2, 1)
+        blending_layout.addWidget(self.sdf_3d_settings_group)
+
         main_processing_layout.addWidget(blending_group)
         
         general_group = QGroupBox("General")
@@ -316,14 +356,12 @@ class ImageProcessorApp(QWidget):
     def on_blending_mode_changed(self, index):
         selected_mode = self.blending_mode_combo.itemData(index)
 
-        # Show/hide ROI settings
-        if selected_mode == ProcessingMode.ROI_FADE:
-            self.roi_settings_group.setVisible(True)
-        else:
-            self.roi_settings_group.setVisible(False)
+        # Show/hide settings groups based on selection
+        self.roi_settings_group.setVisible(selected_mode == ProcessingMode.ROI_FADE)
+        self.sdf_3d_settings_group.setVisible(selected_mode == ProcessingMode.SDF_3D)
 
         # Update fade distance label text
-        if selected_mode == ProcessingMode.ENHANCED_EDT:
+        if selected_mode == ProcessingMode.ENHANCED_EDT or selected_mode == ProcessingMode.SDF_3D:
             self.fade_dist_label.setText("Max Fade (pixels):")
         else:
             self.fade_dist_label.setText("Fade Distance (pixels):")
@@ -374,6 +412,14 @@ class ImageProcessorApp(QWidget):
         self.support_max_size_edit.setText(str(config.roi_params.support_max_size))
         self.support_max_layer_edit.setText(str(config.roi_params.support_max_layer))
         self.support_max_growth_edit.setText(f"{(config.roi_params.support_max_growth - 1.0) * 100.0:.1f}")
+
+        # --- 3D SDF Settings ---
+        self.sdf_window_size_edit.setText(str(config.sdf_3d_params.working_window_size))
+        self.sdf_buffer_layers_edit.setText(str(config.sdf_3d_params.buffer_layers))
+        self.sdf_gradient_radius_edit.setText(str(config.sdf_3d_params.gradient_radius))
+        self.sdf_voxel_x_edit.setText(str(config.sdf_3d_params.voxel_dim_x))
+        self.sdf_voxel_y_edit.setText(str(config.sdf_3d_params.voxel_dim_y))
+        self.sdf_voxel_z_edit.setText(str(config.sdf_3d_params.voxel_dim_z))
 
         # --- General Settings ---
         self.thread_count_edit.setText(str(config.thread_count))
@@ -443,6 +489,19 @@ class ImageProcessorApp(QWidget):
         except ValueError: config.anisotropic_params.x_factor = 1.0
         try: config.anisotropic_params.y_factor = float(self.anisotropic_y_edit.text().replace(',', '.'))
         except ValueError: config.anisotropic_params.y_factor = 1.0
+
+        try: config.sdf_3d_params.working_window_size = int(self.sdf_window_size_edit.text())
+        except ValueError: config.sdf_3d_params.working_window_size = 10
+        try: config.sdf_3d_params.buffer_layers = int(self.sdf_buffer_layers_edit.text())
+        except ValueError: config.sdf_3d_params.buffer_layers = 5
+        try: config.sdf_3d_params.gradient_radius = float(self.sdf_gradient_radius_edit.text().replace(',', '.'))
+        except ValueError: config.sdf_3d_params.gradient_radius = 10.0
+        try: config.sdf_3d_params.voxel_dim_x = float(self.sdf_voxel_x_edit.text().replace(',', '.'))
+        except ValueError: config.sdf_3d_params.voxel_dim_x = 22.0
+        try: config.sdf_3d_params.voxel_dim_y = float(self.sdf_voxel_y_edit.text().replace(',', '.'))
+        except ValueError: config.sdf_3d_params.voxel_dim_y = 22.0
+        try: config.sdf_3d_params.voxel_dim_z = float(self.sdf_voxel_z_edit.text().replace(',', '.'))
+        except ValueError: config.sdf_3d_params.voxel_dim_z = 30.0
 
         try: config.thread_count = int(self.thread_count_edit.text())
         except ValueError: config.thread_count = DEFAULT_NUM_WORKERS
