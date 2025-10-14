@@ -173,6 +173,13 @@ class SDF3DParameters:
     enable_non_linear_norm: bool = False
     non_linear_params: LutParameters = field(default_factory=LutParameters)
 
+    def __post_init__(self):
+        """Ensure nested LutParameters object is created from dict if necessary."""
+        if isinstance(self.non_linear_params, dict):
+            field_names = {f.name for f in fields(LutParameters)}
+            filtered_data = {k: v for k, v in self.non_linear_params.items() if k in field_names}
+            self.non_linear_params = LutParameters(**filtered_data)
+
 
 @dataclass
 class Config:
